@@ -1,3 +1,4 @@
+import { getDomain } from 'tldts';
 import type { ApplicationStatus, EmailCategory } from './constants.js';
 import { EMAIL_STATUS_UPDATE_MIN_CONFIDENCE } from './constants.js';
 import { normalizeCompany } from './dedupe.js';
@@ -119,57 +120,122 @@ export interface ApplicationRef {
   status: ApplicationStatus;
 }
 
-/** Registrable-ish domain ("mail.acme.com" → "acme.com"). Naive, but sufficient for alignment checks. */
-function baseDomain(host: string | null | undefined): string | null {
+/**
+ * Registrable domain using the Public Suffix List ("mail.acme.com" → "acme.com",
+ * "hr.acme.com.ph" → "acme.com.ph"). A naive last-two-labels cut would treat every
+ * ".com.ph" or ".co.uk" sender as the same organisation.
+ */
+function registrable(host: string | null | undefined): string | null {
   if (!host) return null;
-  const h = host.toLowerCase().replace(/^.*@/, '').replace(/[>\s]+$/, '');
-  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(h)) return null;
-  return h.split('.').slice(-2).join('.');
+  const h = host.toLowerCase().trim().replace(/^.*@/, '').replace(/[>\s]+$/, '');
+  return getDomain(h, { allowPrivateDomains: true }) ?? null;
 }
 
 function senderDomain(from: string): string | null {
   const m = from.match(/@([a-z0-9.-]+\.[a-z]{2,})/i);
-  return m ? baseDomain(m[1]) : null;
+  return m ? registrable(m[1]) : null;
+}
+
+function hostOf(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
 }
 
 const ATS_DOMAINS = new Set(['greenhouse.io', 'lever.co', 'ashbyhq.com', 'workable.com', 'smartrecruiters.com', 'myworkdayjobs.com', 'icims.com', 'bamboohr.com', 'kalibrr.com', 'jobstreet.com', 'linkedin.com', 'indeed.com', 'gmail.com']);
 
-/** Hiring platforms whose authenticated mail may update any application's status. */
-const HIRING_PLATFORM_DOMAINS = new Set(['greenhouse.io', 'lever.co', 'ashbyhq.com', 'workable.com', 'smartrecruiters.com', 'myworkdayjobs.com', 'workday.com', 'icims.com', 'bamboohr.com', 'jobvite.com', 'teamtailor.com', 'recruitee.com', 'breezy.hr', 'kalibrr.com', 'jobstreet.com', 'linkedin.com', 'indeed.com']);
-
 /**
- * Reads Gmail's own Authentication-Results header (the caller passes only the first one, which
- * mx.google.com prepends) and reports whether DKIM, SPF or DMARC passed for the From domain.
+ * Applicant-tracking systems keyed by the registrable domain of their apply pages, with the
+ * domains they send candidate mail from. An ATS is trusted only for applications whose apply_url
+ * is on that ATS. Platforms that relay messages written by arbitrary users (LinkedIn, Indeed,
+ * JobStreet, Kalibrr, webmail) are never trusted — their mail can at most be a suggestion.
  */
-export function senderAuthenticated(authResults: string | null | undefined, fromEmail: string): boolean {
-  const from = senderDomain(fromEmail) ?? baseDomain(fromEmail);
-  if (!from || !authResults) return false;
-  const h = authResults.toLowerCase().replace(/\s+/g, ' ');
-  if (!h.trimStart().startsWith('mx.google.com')) return false;
-  const aligned = (d: string | undefined) => baseDomain(d) === from;
-  for (const m of h.matchAll(/dkim=pass[^;]*?header\.(?:d|i)=@?([a-z0-9.-]+)/g)) if (aligned(m[1])) return true;
-  for (const m of h.matchAll(/spf=pass[^;]*?smtp\.mailfrom=(?:[^@\s;]*@)?([a-z0-9.-]+)/g)) if (aligned(m[1])) return true;
-  for (const m of h.matchAll(/dmarc=pass[^;]*?header\.from=([a-z0-9.-]+)/g)) if (aligned(m[1])) return true;
-  return false;
+const ATS_SENDERS: Record<string, string[]> = {
+  'greenhouse.io': ['greenhouse.io', 'greenhouse-mail.io'],
+  'lever.co': ['lever.co'],
+  'ashbyhq.com': ['ashbyhq.com'],
+  'workable.com': ['workable.com', 'workablemail.com'],
+  'smartrecruiters.com': ['smartrecruiters.com'],
+  'myworkdayjobs.com': ['myworkday.com', 'myworkdayjobs.com', 'workday.com'],
+  'icims.com': ['icims.com'],
+  'bamboohr.com': ['bamboohr.com'],
+  'jobvite.com': ['jobvite.com'],
+  'teamtailor.com': ['teamtailor.com', 'teamtailor-mail.com'],
+  'recruitee.com': ['recruitee.com'],
+  'breezy.hr': ['breezy.hr'],
+};
+
+/** Job boards and relays: an apply link here says nothing about who the employer is. */
+const NOT_EMPLOYER_DOMAINS = new Set(['linkedin.com', 'indeed.com', 'jobstreet.com', 'kalibrr.com', 'onlinejobs.ph', 'remotive.com', 'jobicy.com', 'himalayas.app', 'arbeitnow.com', 'gmail.com', 'googlemail.com', 'yahoo.com', 'outlook.com', 'hotmail.com']);
+
+interface AuthResult {
+  method: string;
+  result: string;
+  props: Record<string, string>;
 }
 
 /**
- * A sender may change an application's status only when Gmail authenticated it and its domain is
- * the employer's own (company or apply-link domain) or a recognised hiring platform.
+ * Parses one Authentication-Results header (RFC 8601): drops (comments), splits into
+ * "method=result prop=value …" entries, and returns them only if the authserv-id is
+ * mx.google.com. Anything else — including text an attacker placed inside comments — is ignored.
+ */
+export function parseAuthenticationResults(header: string | null | undefined): AuthResult[] {
+  if (!header) return [];
+  let h = header.toLowerCase();
+  // Comments may nest; strip innermost first until none remain.
+  for (let prev = ''; prev !== h; ) {
+    prev = h;
+    h = h.replace(/\([^()]*\)/g, ' ');
+  }
+  const [authserv, ...entries] = h.split(';').map((s) => s.replace(/\s+/g, ' ').trim());
+  if (authserv?.split(' ')[0] !== 'mx.google.com') return [];
+  const out: AuthResult[] = [];
+  for (const entry of entries) {
+    const [head, ...rest] = entry.split(' ');
+    const m = head?.match(/^([a-z0-9-]+)=([a-z]+)$/);
+    if (!m) continue;
+    const props: Record<string, string> = {};
+    for (const token of rest) {
+      const kv = token.match(/^([a-z0-9-]+\.[a-z0-9-]+)=(.+)$/);
+      if (kv) props[kv[1]!] = kv[2]!.replace(/^"|"$/g, '');
+    }
+    out.push({ method: m[1]!, result: m[2]!, props });
+  }
+  return out;
+}
+
+/**
+ * Whether Gmail authenticated the visible From domain: DMARC pass for header.from, or a passing
+ * DKIM signature whose signing domain is aligned (same registrable domain) with From.
+ * SPF alone is not accepted — it authenticates the envelope sender, not the From header.
+ */
+export function senderAuthenticated(authResults: string | null | undefined, fromEmail: string): boolean {
+  const from = senderDomain(fromEmail);
+  if (!from) return false;
+  return parseAuthenticationResults(authResults).some((r) => {
+    if (r.result !== 'pass') return false;
+    if (r.method === 'dmarc') return registrable(r.props['header.from']) === from;
+    if (r.method === 'dkim') return registrable(r.props['header.d'] ?? r.props['header.i']) === from;
+    return false;
+  });
+}
+
+/**
+ * A sender may change an application's status only when Gmail authenticated it and it is either
+ * the employer itself (same registrable domain as company_domain, or as the apply link when that
+ * link is on the employer's own site) or the ATS that hosts this application's apply link.
  */
 export function isTrustedSender(fromEmail: string, app: Pick<ApplicationRef, 'company_domain' | 'apply_url'> | null, authenticated: boolean): boolean {
   if (!authenticated || !app) return false;
-  const d = senderDomain(fromEmail);
-  if (!d) return false;
-  if (HIRING_PLATFORM_DOMAINS.has(d)) return true;
-  const applyHost = (() => {
-    try {
-      return app.apply_url ? new URL(app.apply_url).hostname : null;
-    } catch {
-      return null;
-    }
-  })();
-  return [baseDomain(app.company_domain), baseDomain(applyHost)].includes(d);
+  const sender = senderDomain(fromEmail);
+  if (!sender || NOT_EMPLOYER_DOMAINS.has(sender)) return false;
+  const applyDomain = registrable(hostOf(app.apply_url));
+  if (applyDomain && ATS_SENDERS[applyDomain]) return ATS_SENDERS[applyDomain]!.includes(sender);
+  const employerDomains = [registrable(app.company_domain), applyDomain && !NOT_EMPLOYER_DOMAINS.has(applyDomain) ? applyDomain : null].filter(Boolean);
+  return employerDomains.includes(sender);
 }
 
 /**
