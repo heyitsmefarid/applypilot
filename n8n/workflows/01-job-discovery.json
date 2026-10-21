@@ -1,0 +1,519 @@
+{
+  "id": "apJobDiscovery01",
+  "name": "ApplyPilot 01 · Job Discovery",
+  "active": false,
+  "nodes": [
+    {
+      "id": "bda28dd1-7b5b-4564-a295-9782e30d940f",
+      "position": [
+        0,
+        0
+      ],
+      "name": "Every hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "3aade121-c328-47dd-ac80-b9f3b45bfdc4",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Run request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "f81aa691-eb98-45a4-a216-31b880e5b566",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "applypilot/job-discovery",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apWebhookAuthKey",
+          "name": "ApplyPilot Webhook Auth"
+        }
+      }
+    },
+    {
+      "id": "d1c8fc6b-d6ab-45b7-accc-5e521527b369",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Resolve run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Webhook calls carry { run_id, input } from the dispatcher (or push mode); schedules carry neither.\nconst first = $input.first().json;\nconst body = first.body ?? {};\nreturn [{ json: {\n  run_id: body.run_id ?? null,\n  trigger: body.run_id ? 'webhook' : 'schedule',\n  input: body.input ?? {},\n  execution_id: String($execution.id),\n} }];"
+      }
+    },
+    {
+      "id": "3f688b76-f4e5-49a0-a4df-4d423ba42a75",
+      "position": [
+        480,
+        0
+      ],
+      "name": "Start run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/start",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'job_discovery', run_id: $json.run_id, trigger: $json.trigger, n8n_execution_id: $json.execution_id, input: $json.input }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Creates/claims the run, checks the emergency pause",
+      "notesInFlow": true
+    },
+    {
+      "id": "e3df5fe8-b7d4-4de3-a1ba-0267e45e1411",
+      "position": [
+        720,
+        0
+      ],
+      "name": "Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nif (!r.proceed) {\n  // Paused, cancelled or already finished: the Worker recorded why. Returning no items ends this execution.\n  return [];\n}\nreturn [{ json: { run_id: r.run.id, input: r.run.input ?? {}, rules: r.rules ?? {} } }];"
+      }
+    },
+    {
+      "id": "32a96223-9b27-40a4-a977-2e2c60ead872",
+      "position": [
+        240,
+        200
+      ],
+      "name": "Load sources & preferences",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/discovery/plan?force={{ $('Gate').first().json.input.force ? 1 : 0 }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Plan honours each source rate limit (e.g. Remotive ≤ 4/day)",
+      "notesInFlow": true
+    },
+    {
+      "id": "5f3e3321-8655-4859-a9e7-43203f7e23dd",
+      "position": [
+        480,
+        200
+      ],
+      "name": "Split requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const plan = $input.first().json;\nconst requests = (plan.requests ?? []).map((r) => ({ json: r }));\n// n8n ends a branch on zero items; a single no-op keeps the run lifecycle (finish step) intact.\nreturn requests.length ? requests : [{ json: { noop: true, source_key: 'none', kind: 'none', url: $env.APPLYPILOT_API_URL + '/health', method: 'GET', headers: {}, meta: {} } }];"
+      }
+    },
+    {
+      "id": "f9430534-daab-41dd-a9b2-183f694cd2cb",
+      "position": [
+        720,
+        200
+      ],
+      "name": "Fetch source",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ JSON.stringify($json.headers ?? {}) }}",
+        "options": {
+          "timeout": 45000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 1500
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "notes": "Official/public APIs only. One failing source never stops the batch.",
+      "notesInFlow": true
+    },
+    {
+      "id": "655ab970-ad19-4e4b-a42a-de440cc3794b",
+      "position": [
+        960,
+        200
+      ],
+      "name": "Normalize listings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ── @applypilot/core source adapters (generated by n8n/src/build.ts — do not edit here) ──\nconst __applypilot = {};\n\"use strict\";(()=>{var G={amp:\"&\",lt:\"<\",gt:\">\",quot:'\"',apos:\"'\",nbsp:\"\\xA0\",ndash:\"\\u2013\",mdash:\"\\u2014\",rsquo:\"\\u2019\",lsquo:\"\\u2018\",rdquo:\"\\u201D\",ldquo:\"\\u201C\",hellip:\"\\u2026\",bull:\"\\u2022\",middot:\"\\xB7\",euro:\"\\u20AC\",pound:\"\\xA3\",copy:\"\\xA9\",reg:\"\\xAE\",trade:\"\\u2122\"};function k(e){return e.replace(/&(#x[0-9a-f]+|#\\d+|[a-z]+);/gi,(n,r)=>{if(r[0]===\"#\"){let o=r[1]?.toLowerCase()===\"x\"?parseInt(r.slice(2),16):parseInt(r.slice(1),10);return Number.isFinite(o)&&o>0&&o<1114112?String.fromCodePoint(o):n}return G[r.toLowerCase()]??n})}function w(e){if(!e)return\"\";let n=e;return/&lt;\\s*\\/?\\s*[a-z]/i.test(n)&&!/<\\s*[a-z]/i.test(n)&&(n=k(n)),n=n.replace(/<(script|style|noscript|template)[^>]*>[\\s\\S]*?<\\/\\1>/gi,\" \").replace(/<!--[\\s\\S]*?-->/g,\" \").replace(/<li[^>]*>/gi,`\n- `).replace(/<br\\s*\\/?>/gi,`\n`).replace(/<\\/(p|div|h[1-6]|li|ul|ol|tr|section|article|header|footer|blockquote)>/gi,`\n`).replace(/<(p|div|h[1-6]|ul|ol|tr|section|article)[^>]*>/gi,`\n`).replace(/<[^>]+>/g,\" \"),n=k(n),n.replace(/\\r/g,\"\").replace(/[ \\t\\f\\v\\u00a0]+/g,\" \").replace(/ *\\n */g,`\n`).replace(/\\n{2,}/g,`\n`).trim()}function h(e){return e.replace(/\\s+/g,\" \").trim()}function P(e,n){return e.length<=n?e:`${e.slice(0,Math.max(0,n-1)).trimEnd()}\\u2026`}function d(e){return e?e.normalize(\"NFKD\").replace(/[̀-ͯ]/g,\"\").toLowerCase().replace(/[^a-z0-9+#.\\s-]/g,\" \").replace(/[\\s-]+/g,\" \").trim():\"\"}function z(e){let n=new Set,r=[];for(let o of e){let t=o.trim(),a=t.toLowerCase();!t||n.has(a)||(n.add(a),r.push(t))}return r}function j(e){if(e==null||e===\"\")return null;let n;if(typeof e==\"number\")n=new Date(e<1e12?e*1e3:e);else if(typeof e==\"string\"){let r=e.trim();if(/^\\d{9,13}$/.test(r))return j(Number(r));n=new Date(r)}else if(e instanceof Date)n=e;else return null;return Number.isNaN(n.getTime())?null:n.toISOString()}function $(e,n=25){let r=e.split(`\n`).map(s=>s.trim()),o=[],t=!1,a=/^(requirements?|qualifications?|what (you|we).{0,20}(need|bring|looking)|must[- ]haves?|who you are|skills( required)?|you have|you will need|minimum qualifications|preferred qualifications|nice to have)\\b/i,c=/^(responsibilities|what you.{0,10}do|benefits|perks|about (us|the)|why join|our offer|compensation|how to apply)\\b/i;for(let s of r){if(!s)continue;let l=s.replace(/^[-*•·]\\s*/,\"\").replace(/:$/,\"\");if(a.test(l)&&l.length<80){t=!0;continue}if(c.test(l)&&l.length<80){t=!1;continue}if(t&&l.length>3&&l.length<600&&o.push(l),o.length>=n)break}return o}function N(...e){let n=e.filter(r=>typeof r==\"string\").join(\" \").toLowerCase();return/\\bhybrid\\b/.test(n)?\"hybrid\":/\\b(fully remote|100% remote|remote[- ]first|work from home|wfh|remote)\\b|telecommute|anywhere/.test(n)?/\\b(not remote|no remote|onsite only|on-site only)\\b/.test(n)?\"onsite\":\"remote\":/\\b(on[- ]?site|in[- ]office|office[- ]based|in person|skeleton)\\b/.test(n)?\"onsite\":\"unknown\"}function I(...e){let n=e.filter(Boolean).join(\" \").toLowerCase();return/\\b(intern|internship|ojt|on[- ]the[- ]job training|practicum|trainee)\\b/.test(n)?\"internship\":/\\bfreelanc/.test(n)?\"freelance\":/\\bpart[- _]?time\\b/.test(n)?\"part_time\":/\\b(contract|contractor|temporary|project[- ]based)\\b/.test(n)?\"contract\":/\\bfull[- _]?time\\b|\\bpermanent\\b/.test(n)?\"full_time\":\"unknown\"}function B(e){let n=/(\\d{1,2})\\s*(?:\\+|plus)?\\s*(?:-\\s*\\d{1,2}\\s*)?(?:years?|yrs?)(?:\\s+of)?(?:\\s+\\w+){0,4}\\s+(?:experience|exp\\b)/gi,r=null;for(let o of e.matchAll(n)){let t=parseInt(o[1],10);t<=20&&(r===null||t>r)&&(r=t)}if(r===null){let o=/(?:minimum|at least|min\\.?)\\s+(?:of\\s+)?(\\d{1,2})\\s*(?:years?|yrs?)/gi;for(let t of e.matchAll(o)){let a=parseInt(t[1],10);a<=20&&(r===null||a>r)&&(r=a)}}return r}function v(e,n=\"\"){let r=e.toLowerCase();if(/\\b(intern|internship|ojt|trainee|apprentice)\\b/.test(r))return\"internship\";if(/\\b(senior|sr\\.?|staff|principal|lead|head|director|architect|manager)\\b/.test(r))return\"senior\";if(/\\b(junior|jr\\.?|entry[- ]level|graduate|associate|new grad)\\b/.test(r))return\"junior\";if(/\\b(mid|intermediate|ii|level 2)\\b/.test(r))return\"mid\";let o=B(n);return o!==null?o<=1?\"entry\":o<=2?\"junior\":o<=4?\"mid\":\"senior\":/\\b(entry[- ]level|no experience required|fresh graduates?)\\b/i.test(n)?\"entry\":\"unknown\"}var K=[\"philippines\",\"philippine\",\"filipino\",\"manila\",\"metro manila\",\"ncr\",\"cebu\",\"davao\",\"worldwide\",\"anywhere\",\"global\",\"apac\",\"asia\",\"southeast asia\",\"sea\",\"asia pacific\",\"emea apac\",\"utc+8\",\"gmt+8\"],W=[\"usa\",\"us only\",\"united states\",\"u.s.\",\"canada\",\"uk\",\"united kingdom\",\"europe\",\"eu\",\"emea\",\"germany\",\"latam\",\"latin america\",\"americas\",\"north america\",\"india\",\"australia\",\"new zealand\",\"brazil\",\"mexico\",\"poland\",\"spain\",\"france\",\"netherlands\",\"japan\",\"south africa\",\"nigeria\",\"kenya\"];function E(e,n=\"\"){let r=` ${d(e??\"\")} `,o=a=>r.includes(` ${a} `)||r.includes(` ${a},`);if(r.trim()){if(K.some(a=>o(d(a))))return\"eligible\";if(W.some(a=>o(d(a))))return\"ineligible\"}let t=n.toLowerCase();return/\\b(philippines|filipino|ph[- ]based)\\b/.test(t)?\"eligible\":/\\b(must (be|reside|live) in|only (accept|hiring)|located in|authori[sz]ed to work in) (the )?(us|usa|united states|uk|eu|canada|europe)/.test(t)||/\\b(us|usa|u\\.s\\.) (citizens?|residents?) only\\b|\\bus[- ]only\\b/.test(t)?\"ineligible\":\"unknown\"}var Y=/\\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|gmbh|pte|plc|sa|bv|ag|opc|philippines|ph)\\b/g,V=/\\b(remote|hybrid|onsite|on site|urgent|hiring|wfh|work from home|immediate start|apply now)\\b/g;function X(e){return d(e).replace(Y,\" \").replace(/[.]/g,\"\").replace(/\\s+/g,\" \").trim()}function Z(e){return d(e).replace(/\\(.*?\\)|\\[.*?\\]/g,\" \").replace(V,\" \").replace(/\\bsr\\b/g,\"senior\").replace(/\\bjr\\b/g,\"junior\").replace(/\\bfront end\\b/g,\"frontend\").replace(/\\bback end\\b/g,\"backend\").replace(/\\bfull stack\\b/g,\"fullstack\").replace(/\\s+/g,\" \").trim()}function Q(e){let n=d(e);return!n||/\\b(remote|anywhere|worldwide|global)\\b/.test(n)?\"remote\":n.split(/[,/|]/)[0].trim()}function ee(e){let n=0xcbf29ce484222325n,r=0x100000001b3n;for(let o=0;o<e.length;o++)n^=BigInt(e.charCodeAt(o)),n=n*r&0xffffffffffffffffn;return n.toString(16).padStart(16,\"0\")}function J(e){return ee(`${X(e.company)}|${Z(e.title)}|${Q(e.location)}`)}var te=[[/₱|\\bphp\\b|\\bpesos?\\b/i,\"PHP\"],[/€|\\beur\\b|\\beuros?\\b/i,\"EUR\"],[/£|\\bgbp\\b/i,\"GBP\"],[/\\bcad\\b|c\\$/i,\"CAD\"],[/\\baud\\b|a\\$/i,\"AUD\"],[/\\bsgd\\b|s\\$/i,\"SGD\"],[/\\binr\\b|₹/i,\"INR\"],[/\\$|\\busd\\b|\\bdollars?\\b/i,\"USD\"]];function ne(e){let n=e.replace(/,/g,\"\").match(/(\\d+(?:\\.\\d+)?)\\s*(k|m)?/i);if(!n||!n[1])return null;let r=parseFloat(n[1]),o=n[2]?.toLowerCase();return o===\"k\"&&(r*=1e3),o===\"m\"&&(r*=1e6),Number.isFinite(r)?r:null}function re(e){let n=e.toLowerCase();return/(per|an|\\/|a)\\s*(hour|hr)\\b|hourly|\\/h\\b|p\\/h/.test(n)?\"hour\":/(per|a|\\/)\\s*day\\b|daily/.test(n)?\"day\":/(per|a|\\/)\\s*week\\b|weekly/.test(n)?\"week\":/(per|a|\\/)\\s*(month|mo)\\b|monthly|\\/mo\\b/.test(n)?\"month\":/(per|a|\\/)\\s*(year|yr|annum)\\b|annual|yearly|\\bpa\\b|p\\.a\\./.test(n)?\"year\":null}function ie(e){for(let[n,r]of te)if(n.test(e))return r;return null}function T(e){let n={min:null,max:null,currency:null,period:null};if(!e)return n;let r=e.trim();if(!/\\d/.test(r))return n;let o=[...r.matchAll(/(\\d[\\d,]*(?:\\.\\d+)?)\\s*(k|m)?\\b/gi)].map(l=>ne(l[0])).filter(l=>l!==null&&l>0);if(!o.length)return n;let t=ie(r),a=re(r),c=Math.min(...o.slice(0,2)),s=Math.max(...o.slice(0,2));return a||(t===\"PHP\"?a=s>=15e4?\"year\":s>=2e3?\"month\":s>=300?\"day\":\"hour\":a=s>=15e3?\"year\":s>=1e3?\"month\":s>=150?\"day\":\"hour\"),{min:c,max:s,currency:t,period:a}}var O=(e,n)=>({success:!1,error:{issues:[{path:[e],message:n}]}}),C={safeParse(e){let n=e;for(let r of[\"source_key\",\"external_id\",\"title\",\"company\"])if(typeof n[r]!=\"string\"||!n[r].trim())return O(r,\"Required\");return/^https?:\\/\\/[^\\s/?#]+\\.[^\\s]*$/i.test(String(n.apply_url))?{success:!0,data:n}:O(\"apply_url\",\"Invalid URL\")}};var oe={remote:\"remote\",telecommute:\"remote\",hybrid:\"hybrid\",onsite:\"onsite\",\"on-site\":\"onsite\",on_site:\"onsite\",office:\"onsite\",inperson:\"onsite\"},ae={full_time:\"full_time\",fulltime:\"full_time\",\"full-time\":\"full_time\",\"full time\":\"full_time\",part_time:\"part_time\",parttime:\"part_time\",\"part-time\":\"part_time\",\"part time\":\"part_time\",contract:\"contract\",contractor:\"contract\",temporary:\"contract\",freelance:\"freelance\",internship:\"internship\",intern:\"internship\"};function A(e){let n=h(e.title??\"\"),r=h(e.company??\"\"),o=e.external_id===null||e.external_id===void 0?\"\":String(e.external_id);if(!n||!r||!o||!e.apply_url)return{error:\"missing title/company/id/url\"};let t=P(e.description_text?e.description_text.trim():w(e.description_html),3e4),a=h(e.location??\"\"),s=(e.arrangement_hint?oe[e.arrangement_hint.toLowerCase().replace(/\\s+/g,\"\")]:void 0)??(e.remote_flag===!0?\"remote\":N(n,a,t.slice(0,1500)));s===\"remote\"&&/\\bhybrid\\b/i.test(`${n} ${a}`)&&(s=\"hybrid\");let g=(e.employment_hint?ae[e.employment_hint.toLowerCase().trim()]:void 0)??I(n,e.employment_hint,t.slice(0,2e3)),u={min:e.salary_min??null,max:e.salary_max??null,currency:e.salary_currency??null,period:e.salary_period??null};u.min===null&&u.max===null&&e.salary_text&&(u=T(e.salary_text));let R=e.candidate_locations?h(e.candidate_locations):null,H=s===\"onsite\"&&/philippines|manila|makati|pasig|quezon|taguig|cebu/i.test(a)?\"eligible\":E(R??(s===\"remote\"?null:a),t),F={source_key:e.source_key,external_id:o.slice(0,300),title:n.slice(0,300),company:r.slice(0,200),company_url:e.company_url||null,location:a.slice(0,300),work_arrangement:s,employment_type:g,experience_level:v(n,t),salary_min:u.min,salary_max:u.max,salary_currency:u.currency,salary_period:u.period,salary_text:e.salary_text?e.salary_text.slice(0,300):null,candidate_locations:R?.slice(0,500)??null,ph_eligibility:H,description:t,requirements:$(t),tags:z((e.tags??[]).filter(b=>!!b).map(b=>b.slice(0,80))).slice(0,40),apply_url:e.apply_url,posted_at:j(e.posted_at),expires_at:j(e.expires_at)},x=C.safeParse(F);return x.success?{job:{...x.data,fingerprint:J(x.data)}}:{error:x.error.issues.map(b=>`${b.path.join(\".\")}: ${b.message}`).join(\"; \")}}function m(e){let n=[],r=[];for(let o of e){let t=A(o);\"job\"in t?n.push(t.job):r.push({external_id:String(o.external_id??\"?\"),reason:t.error})}return{jobs:n,rejected:r}}function S(e,n=4){let r=new Set;for(let t of e.filter(a=>a.is_active))for(let a of t.roles){let c=a.toLowerCase().replace(/\\b(intern|junior|part-time|freelance|entry level)\\b/g,\"\").replace(/\\s+/g,\" \").trim();c&&r.add(c)}let o=[...r];return o.sort((t,a)=>t.length-a.length),o.slice(0,n)}function f(e,n){return Array.isArray(e)?e:n&&e&&typeof e==\"object\"&&Array.isArray(e[n])?e[n]:[]}var i=e=>typeof e==\"string\"?e:typeof e==\"number\"?String(e):null,p=e=>{let n=typeof e==\"number\"?e:typeof e==\"string\"&&e.trim()!==\"\"?Number(e):NaN;return Number.isFinite(n)?n:null};var L=\"ApplyPilotAI/0.1 (personal job search assistant; +https://github.com/)\";var se={\"User-Agent\":L,Accept:\"application/json\"};function y(e,n,r={}){return{source_key:e.key,kind:e.kind,url:n,method:\"GET\",headers:se,meta:r}}function _(e,n){let r=e.config[n];return Array.isArray(r)?r.filter(o=>typeof o==\"string\"&&o.trim()!==\"\").map(o=>o.trim()):typeof r==\"string\"&&r.trim()?r.split(\",\").map(o=>o.trim()).filter(Boolean):[]}function q(e,n,r){let o=_(e,\"search_terms\");return o.length?o.slice(0,r):S(n,r)}var M={annual:\"year\",yearly:\"year\",monthly:\"month\",month:\"month\",hourly:\"hour\",hour:\"hour\",weekly:\"week\",daily:\"day\"},le={kind:\"remotive\",label:\"Remotive\",access:\"Official public API (attribution + link-back required, max 4 requests/day)\",officialApi:!0,defaultMinIntervalMinutes:360,buildRequests(e,n){let r=q(e,n,2),o=Number(e.config.limit??100);return[y(e,`https://remotive.com/api/remote-jobs?category=software-dev&limit=${o}`),...r.slice(0,1).map(t=>y(e,`https://remotive.com/api/remote-jobs?search=${encodeURIComponent(t)}&limit=${o}`,{term:t}))]},normalize(e,n){let r=f(e,\"jobs\").map(o=>{let t=o;return{source_key:n.source_key,external_id:i(t.id),title:i(t.title),company:i(t.company_name),location:i(t.candidate_required_location)??\"Remote\",candidate_locations:i(t.candidate_required_location),description_html:i(t.description),apply_url:i(t.url),posted_at:i(t.publication_date)?`${i(t.publication_date)}Z`:null,tags:[...Array.isArray(t.tags)?t.tags:[],i(t.category)??\"\"],remote_flag:!0,employment_hint:i(t.job_type),salary_text:i(t.salary)||null}});return m(r)}},ce={kind:\"arbeitnow\",label:\"Arbeitnow\",access:\"Free public API (link-back appreciated)\",officialApi:!0,defaultMinIntervalMinutes:60,buildRequests(e){let n=Math.min(3,Math.max(1,Number(e.config.pages??1)));return Array.from({length:n},(r,o)=>y(e,`https://www.arbeitnow.com/api/job-board-api?page=${o+1}`,{page:String(o+1)}))},normalize(e,n){let r=f(e,\"data\").map(o=>{let t=o,a=Array.isArray(t.job_types)?t.job_types:[];return{source_key:n.source_key,external_id:i(t.slug),title:i(t.title),company:i(t.company_name),location:i(t.location),candidate_locations:t.remote===!0?null:i(t.location),description_html:i(t.description),apply_url:i(t.url),posted_at:p(t.created_at),tags:[...Array.isArray(t.tags)?t.tags:[],...a],remote_flag:t.remote===!0,employment_hint:a.find(c=>/intern|praktik|part|teilzeit|full|vollzeit|freelance|contract/i.test(c))?.replace(/praktikum/i,\"internship\").replace(/teilzeit/i,\"part-time\").replace(/vollzeit/i,\"full-time\")??null}});return m(r)}},ue={kind:\"jobicy\",label:\"Jobicy\",access:\"Free public API (credit + original apply link required)\",officialApi:!0,defaultMinIntervalMinutes:180,buildRequests(e,n){let r=typeof e.config.geo==\"string\"?e.config.geo:\"\",o=Number(e.config.count??50),t=_(e,\"tags\"),a=t.length?t:q(e,n,2).map(c=>c.split(\" \")[0]);return[...new Set(a)].slice(0,3).map(c=>y(e,`https://jobicy.com/api/v2/remote-jobs?count=${o}&tag=${encodeURIComponent(c)}${r?`&geo=${encodeURIComponent(r)}`:\"\"}`,{tag:c}))},normalize(e,n){let r=f(e,\"jobs\").map(o=>{let t=o,a=p(t.annualSalaryMin??t.salaryMin),c=p(t.annualSalaryMax??t.salaryMax),s=i(t.salaryPeriod);return{source_key:n.source_key,external_id:i(t.id),title:i(t.jobTitle),company:i(t.companyName),location:i(t.jobGeo)??\"Remote\",candidate_locations:i(t.jobGeo),description_html:i(t.jobDescription)??i(t.jobExcerpt),apply_url:i(t.url),posted_at:i(t.pubDate),tags:[...Array.isArray(t.jobIndustry)?t.jobIndustry:[],i(t.jobLevel)??\"\"],remote_flag:!0,employment_hint:Array.isArray(t.jobType)?t.jobType[0]??null:i(t.jobType),salary_min:a,salary_max:c,salary_currency:a!==null||c!==null?i(t.salaryCurrency)??\"USD\":null,salary_period:a!==null||c!==null?s&&M[s.toLowerCase()]||\"year\":null}});return m(r)}},pe={kind:\"himalayas\",label:\"Himalayas\",access:\"Free public API (cursor pagination)\",officialApi:!0,defaultMinIntervalMinutes:120,buildRequests(e){let n=Math.min(20,Number(e.config.limit??20));return[y(e,`https://himalayas.app/jobs/api?limit=${n}`)]},normalize(e,n){let r=f(e,\"jobs\").map(o=>{let t=o,a=Array.isArray(t.locationRestrictions)?t.locationRestrictions:[],c=i(t.salaryPeriod),s=p(t.minSalary),l=p(t.maxSalary);return{source_key:n.source_key,external_id:i(t.guid)??i(t.applicationLink),title:i(t.title),company:i(t.companyName),location:a.length?a.join(\", \"):\"Worldwide\",candidate_locations:a.length?a.join(\", \"):\"Worldwide\",description_html:i(t.description)??i(t.excerpt),apply_url:i(t.applicationLink)??i(t.guid),posted_at:p(t.pubDate),expires_at:p(t.expiryDate),tags:[...Array.isArray(t.categories)?t.categories:[],...Array.isArray(t.seniority)?t.seniority:[]],remote_flag:!0,employment_hint:i(t.employmentType),level_hint:Array.isArray(t.seniority)?t.seniority.join(\" \"):null,salary_min:s,salary_max:l,salary_currency:s!==null||l!==null?i(t.currency):null,salary_period:s!==null||l!==null?c&&M[c.toLowerCase()]||\"year\":null}});return m(r)}},me={kind:\"greenhouse\",label:\"Greenhouse (company boards)\",access:\"Official public Job Board API (read-only)\",officialApi:!0,defaultMinIntervalMinutes:60,buildRequests(e){return _(e,\"boards\").slice(0,25).map(n=>y(e,`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(n)}/jobs?content=true`,{board:n}))},normalize(e,n){let r=n.meta.company??n.meta.board??\"Unknown\",o=f(e,\"jobs\").map(t=>{let a=t,c=a.location?.name,s=Array.isArray(a.metadata)?a.metadata:[],l=g=>i(s.find(u=>g.test(String(u.name)))?.value);return{source_key:n.source_key,external_id:`${n.meta.board}:${i(a.id)}`,title:i(a.title),company:i(a.company_name)??r,location:i(c),description_html:i(a.content),apply_url:i(a.absolute_url),posted_at:i(a.first_published)??i(a.updated_at),arrangement_hint:l(/workplace|remote|location type/i),employment_hint:l(/employment|commitment|type/i)}});return m(o)}},de={kind:\"lever\",label:\"Lever (company boards)\",access:\"Official public Postings API (read-only)\",officialApi:!0,defaultMinIntervalMinutes:60,buildRequests(e){return _(e,\"companies\").slice(0,25).map(n=>y(e,`https://api.lever.co/v0/postings/${encodeURIComponent(n)}?mode=json`,{company:n}))},normalize(e,n){let r=f(e).map(o=>{let t=o,a=t.categories??{},s=(Array.isArray(t.lists)?t.lists:[]).map(u=>`${i(u.text)??\"\"}\n${(i(u.content)??\"\").replace(/<li>/g,`\n- `).replace(/<[^>]+>/g,\" \")}`).join(`\n\n`),l=t.salaryRange??null,g=l?i(l.interval):null;return{source_key:n.source_key,external_id:`${n.meta.company}:${i(t.id)}`,title:i(t.text),company:n.meta.company_name??n.meta.company??\"Unknown\",location:i(a.location)??(Array.isArray(a.allLocations)?a.allLocations.join(\", \"):null),description_text:`${i(t.descriptionPlain)??\"\"}\n\n${s}\n\n${i(t.additionalPlain)??\"\"}`.trim(),apply_url:i(t.hostedUrl)??i(t.applyUrl),posted_at:p(t.createdAt),tags:[i(a.team)??\"\",i(a.department)??\"\"],arrangement_hint:i(t.workplaceType),employment_hint:i(a.commitment),salary_min:l?p(l.min):null,salary_max:l?p(l.max):null,salary_currency:l?i(l.currency):null,salary_period:g?/hour/i.test(g)?\"hour\":/month/i.test(g)?\"month\":\"year\":null}});return m(r)}},fe={kind:\"ashby\",label:\"Ashby (company boards)\",access:\"Official public Job Board API (read-only)\",officialApi:!0,defaultMinIntervalMinutes:60,buildRequests(e){return _(e,\"organizations\").slice(0,25).map(n=>y(e,`https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(n)}?includeCompensation=true`,{org:n}))},normalize(e,n){let r=f(e,\"jobs\").map(o=>{let t=o,a=t.compensation??null,c=Array.isArray(t.secondaryLocations)?t.secondaryLocations.map(l=>i(l.location)).filter(Boolean):[],s=t.address?.postalAddress??{};return{source_key:n.source_key,external_id:`${n.meta.org}:${i(t.id)}`,title:i(t.title),company:n.meta.company_name??n.meta.org??\"Unknown\",location:[i(t.location),...c].filter(Boolean).join(\", \")||i(s.addressCountry),description_text:i(t.descriptionPlain),description_html:i(t.descriptionHtml),apply_url:i(t.applyUrl)??i(t.jobUrl),posted_at:i(t.publishedAt),tags:[i(t.department)??\"\",i(t.team)??\"\"],remote_flag:t.isRemote===!0?!0:null,arrangement_hint:i(t.workplaceType),employment_hint:i(t.employmentType)?.replace(/^FullTime$/,\"full_time\").replace(/^PartTime$/,\"part_time\").replace(/^Intern$/,\"internship\")??null,salary_text:a?i(a.compensationTierSummary)??i(a.scrapeableCompensationSalarySummary):null}});return m(r)}},U={remotive:le,arbeitnow:ce,jobicy:ue,himalayas:pe,greenhouse:me,lever:de,ashby:fe};function ye(e){return U[e]}function D(e,n,r){let o=ye(e);return o?o.normalize(n,r):{jobs:[],rejected:[]}}__applypilot.normalizeResponse=D;})();\nconst ApplyPilotCore = __applypilot;\n\nconst errOf = (j) => {\n  if (!j || j.error === undefined) return null;\n  const e = j.error;\n  if (typeof e === 'string') return e;\n  return e.message || e.description || JSON.stringify(e).slice(0, 300);\n};\n\nconst requests = $('Split requests').all();\nconst bySource = new Map();\nconst bucket = (key) => {\n  if (!bySource.has(key)) bySource.set(key, { source_key: key, jobs: [], fetch_errors: [], rejected: 0 });\n  return bySource.get(key);\n};\n$input.all().forEach((item, i) => {\n  const req = requests[i]?.json;\n  if (!req || req.noop) return;\n  const b = bucket(req.source_key);\n  const err = errOf(item.json);\n  if (err) { b.fetch_errors.push({ url: req.url, error: err }); return; }\n  try {\n    const result = ApplyPilotCore.normalizeResponse(req.kind, item.json, { source_key: req.source_key, meta: req.meta ?? {} });\n    b.jobs.push(...result.jobs);\n    b.rejected += result.rejected.length;\n  } catch (e) {\n    b.fetch_errors.push({ url: req.url, error: 'normalize: ' + e.message });\n  }\n});\n// Ingest in chunks of 100 so each Worker request stays small.\nconst out = [];\nfor (const b of bySource.values()) {\n  if (!b.jobs.length) { out.push({ json: { ...b, run_id: $('Gate').first().json.run_id } }); continue; }\n  for (let i = 0; i < b.jobs.length; i += 100) {\n    out.push({ json: { ...b, jobs: b.jobs.slice(i, i + 100), fetch_errors: i === 0 ? b.fetch_errors : [], rejected: i === 0 ? b.rejected : 0, run_id: $('Gate').first().json.run_id } });\n  }\n}\nreturn out.length ? out : [{ json: { source_key: 'none', jobs: [], fetch_errors: [], rejected: 0, run_id: $('Gate').first().json.run_id } }];"
+      }
+    },
+    {
+      "id": "bd380b28-ddfd-411b-abb2-90532427234f",
+      "position": [
+        1200,
+        200
+      ],
+      "name": "Store jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/jobs/ingest",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 300
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ run_id: $json.run_id, source_key: $json.source_key, jobs: $json.jobs, fetch_errors: $json.fetch_errors, rejected: $json.rejected }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput",
+      "notes": "Validates, removes duplicates (same source + cross-source fingerprint), upserts",
+      "notesInFlow": true
+    },
+    {
+      "id": "7c6e545e-1b59-4ab3-a4dd-76a090ca64d8",
+      "position": [
+        1440,
+        200
+      ],
+      "name": "Collect results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const errOf = (j) => {\n  if (!j || j.error === undefined) return null;\n  const e = j.error;\n  if (typeof e === 'string') return e;\n  return e.message || e.description || JSON.stringify(e).slice(0, 300);\n};\n\nconst sent = $('Normalize listings').all();\nconst stats = { requests: $('Split requests').all().filter((r) => !r.json.noop).length, received: 0, inserted: 0, duplicates: 0, invalid: 0, irrelevant: 0, expired: 0, fetch_errors: 0 };\nconst ids = [];\nconst item_errors = [];\n$input.all().forEach((it, i) => {\n  const err = errOf(it.json);\n  if (err) { item_errors.push({ source_key: sent[i]?.json.source_key, error: err }); return; }\n  const s = it.json.stats ?? {};\n  stats.received += s.received ?? 0;\n  stats.inserted += s.inserted ?? 0;\n  stats.duplicates += (s.duplicates_in_batch ?? 0) + (s.duplicates_cross_source ?? 0) + (s.already_known ?? 0);\n  stats.invalid += s.invalid ?? 0;\n  stats.irrelevant += s.irrelevant ?? 0;\n  stats.expired += s.expired ?? 0;\n  stats.fetch_errors += s.fetch_errors ?? 0;\n  ids.push(...(it.json.inserted_ids ?? []));\n});\nfor (const s of sent) for (const fe of s.json.fetch_errors ?? []) item_errors.push({ source_key: s.json.source_key, ...fe });\nconst status = item_errors.length ? (stats.inserted || stats.received ? 'partial' : 'failed') : 'succeeded';\nreturn [{ json: { status, stats, item_errors, new_job_ids: ids, output: { new_job_ids: ids.slice(0, 200) } } }];"
+      }
+    },
+    {
+      "id": "b14ec28a-377f-400a-af64-9f6414343560",
+      "position": [
+        1680,
+        200
+      ],
+      "name": "Expire stale listings",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/jobs/expire",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "2da22e62-19e1-4d24-a2f8-771b992274e6",
+      "position": [
+        1920,
+        200
+      ],
+      "name": "Queue matching",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/enqueue-batch",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ runs: $('Collect results').first().json.new_job_ids.length ? [{ workflow: 'job_matching', trigger: 'event', input: { job_ids: $('Collect results').first().json.new_job_ids.slice(0, 200) }, idempotency_key: 'match:' + $('Gate').first().json.run_id }] : [] }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Hands new jobs to Workflow 3 (independent, retryable)",
+      "notesInFlow": true
+    },
+    {
+      "id": "80411921-a746-45f1-a1da-6d96c9276c0e",
+      "position": [
+        2160,
+        200
+      ],
+      "name": "Finish run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/{{ $('Gate').first().json.run_id }}/finish",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: $('Collect results').first().json.status, stats: $('Collect results').first().json.stats, item_errors: $('Collect results').first().json.item_errors ?? [], output: $('Collect results').first().json.output ?? null }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Every hour": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run request": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve run": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate": {
+      "main": [
+        [
+          {
+            "node": "Load sources & preferences",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load sources & preferences": {
+      "main": [
+        [
+          {
+            "node": "Split requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split requests": {
+      "main": [
+        [
+          {
+            "node": "Fetch source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch source": {
+      "main": [
+        [
+          {
+            "node": "Normalize listings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize listings": {
+      "main": [
+        [
+          {
+            "node": "Store jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store jobs": {
+      "main": [
+        [
+          {
+            "node": "Collect results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect results": {
+      "main": [
+        [
+          {
+            "node": "Expire stale listings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expire stale listings": {
+      "main": [
+        [
+          {
+            "node": "Queue matching",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue matching": {
+      "main": [
+        [
+          {
+            "node": "Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "apErrorRecover09"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "applypilot": {
+      "description": "Fetches authorized job sources, normalizes, deduplicates, stores and queues matching."
+    }
+  },
+  "versionId": "c58381a1-8691-4b6f-a19c-3ecf73e90a03"
+}

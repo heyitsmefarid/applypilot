@@ -1,0 +1,363 @@
+{
+  "id": "apErrorRecover09",
+  "name": "ApplyPilot 09 · Error Recovery",
+  "active": false,
+  "nodes": [
+    {
+      "id": "801f82ef-c3e1-4ed5-adef-1120fd4c6329",
+      "position": [
+        0,
+        0
+      ],
+      "name": "On workflow error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "parameters": {}
+    },
+    {
+      "id": "4c8894ef-120c-4125-ad6c-fafaba1c9e00",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Describe failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const e = $input.first().json;\nreturn [{ json: {\n  execution_id: e.execution?.id ? String(e.execution.id) : null,\n  workflow_name: e.workflow?.name ?? 'unknown',\n  node: e.execution?.lastNodeExecuted ?? null,\n  error: (e.execution?.error?.message ?? 'Unknown error').slice(0, 3000),\n} }];"
+      }
+    },
+    {
+      "id": "75187005-5030-490e-a618-a6d56c600133",
+      "position": [
+        480,
+        0
+      ],
+      "name": "Record failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/fail-execution",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000,
+      "notes": "Marks the run failed and notifies when retries are exhausted",
+      "notesInFlow": true
+    },
+    {
+      "id": "69ad73ad-eea2-492d-a126-bd2f2dd70dbb",
+      "position": [
+        0,
+        400
+      ],
+      "name": "Every 15 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "0ea3897c-3bee-458e-a768-f7487f514fa9",
+      "position": [
+        240,
+        400
+      ],
+      "name": "Run request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "3bc6a045-c8fa-47c1-a602-822a7df49937",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "applypilot/error-recovery",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apWebhookAuthKey",
+          "name": "ApplyPilot Webhook Auth"
+        }
+      }
+    },
+    {
+      "id": "6cdaffe4-a3ec-45c3-afb6-036c6c34494f",
+      "position": [
+        240,
+        400
+      ],
+      "name": "Resolve run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Webhook calls carry { run_id, input } from the dispatcher (or push mode); schedules carry neither.\nconst first = $input.first().json;\nconst body = first.body ?? {};\nreturn [{ json: {\n  run_id: body.run_id ?? null,\n  trigger: body.run_id ? 'webhook' : 'schedule',\n  input: body.input ?? {},\n  execution_id: String($execution.id),\n} }];"
+      }
+    },
+    {
+      "id": "5ff8e3d9-89fc-4718-ab92-bb4041f8e71e",
+      "position": [
+        480,
+        400
+      ],
+      "name": "Start run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/start",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'error_recovery', run_id: $json.run_id, trigger: $json.trigger, n8n_execution_id: $json.execution_id, input: $json.input }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "b79fc41f-a60f-4957-ad6f-617e97b0c5d5",
+      "position": [
+        720,
+        400
+      ],
+      "name": "Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nif (!r.proceed) {\n  // Paused, cancelled or already finished: the Worker recorded why. Returning no items ends this execution.\n  return [];\n}\nreturn [{ json: { run_id: r.run.id, input: r.run.input ?? {}, rules: r.rules ?? {} } }];"
+      }
+    },
+    {
+      "id": "1d262a93-0ffe-4f4b-a3a9-a863f82efb91",
+      "position": [
+        960,
+        400
+      ],
+      "name": "Schedule retries",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/recovery/scan",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Retryable failures only; backoff 10 → 20 → 40 min",
+      "notesInFlow": true
+    },
+    {
+      "id": "6d93289a-9990-4c8c-aff1-7d0abda450a1",
+      "position": [
+        1200,
+        400
+      ],
+      "name": "Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nreturn [{ json: { status: 'succeeded', stats: { retried: (r.retried ?? []).length, skipped: (r.skipped ?? []).length }, item_errors: [] } }];"
+      }
+    },
+    {
+      "id": "42d86ce4-3be2-48f9-ac30-913516466e34",
+      "position": [
+        1440,
+        400
+      ],
+      "name": "Finish run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/{{ $('Gate').first().json.run_id }}/finish",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: $('Summarize').first().json.status, stats: $('Summarize').first().json.stats, item_errors: $('Summarize').first().json.item_errors ?? [], output: $('Summarize').first().json.output ?? null }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "On workflow error": {
+      "main": [
+        [
+          {
+            "node": "Describe failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Describe failure": {
+      "main": [
+        [
+          {
+            "node": "Record failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 15 minutes": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run request": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve run": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate": {
+      "main": [
+        [
+          {
+            "node": "Schedule retries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule retries": {
+      "main": [
+        [
+          {
+            "node": "Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize": {
+      "main": [
+        [
+          {
+            "node": "Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "applypilot": {
+      "description": "Records n8n failures and retries failed runs with backoff."
+    }
+  },
+  "versionId": "992b81f0-2f34-459c-a5d9-863c417adbab"
+}

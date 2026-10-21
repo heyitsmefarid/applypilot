@@ -1,0 +1,364 @@
+{
+  "id": "apResumeAnalys02",
+  "name": "ApplyPilot 02 · Resume Analysis",
+  "active": false,
+  "nodes": [
+    {
+      "id": "aa19ffcb-32c7-4ce7-ad5f-149da5e5c122",
+      "position": [
+        0,
+        0
+      ],
+      "name": "Every 30 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "497e4a6e-f97e-4f1a-aaf5-f7190786543f",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Run request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "154f53d7-cdef-41fe-a002-1f8eb7205ced",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "applypilot/resume-analysis",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apWebhookAuthKey",
+          "name": "ApplyPilot Webhook Auth"
+        }
+      }
+    },
+    {
+      "id": "dfa82683-84da-4c1e-a4e3-0f3b432f6667",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Resolve run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Webhook calls carry { run_id, input } from the dispatcher (or push mode); schedules carry neither.\nconst first = $input.first().json;\nconst body = first.body ?? {};\nreturn [{ json: {\n  run_id: body.run_id ?? null,\n  trigger: body.run_id ? 'webhook' : 'schedule',\n  input: body.input ?? {},\n  execution_id: String($execution.id),\n} }];"
+      }
+    },
+    {
+      "id": "afb549d5-c0fb-444c-aeb3-9e4fa0b2d5f2",
+      "position": [
+        480,
+        0
+      ],
+      "name": "Start run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/start",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'resume_analysis', run_id: $json.run_id, trigger: $json.trigger, n8n_execution_id: $json.execution_id, input: $json.input }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Creates/claims the run, checks the emergency pause",
+      "notesInFlow": true
+    },
+    {
+      "id": "1fa7e31e-cbcf-4c72-a942-8cc8e0738268",
+      "position": [
+        720,
+        0
+      ],
+      "name": "Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nif (!r.proceed) {\n  // Paused, cancelled or already finished: the Worker recorded why. Returning no items ends this execution.\n  return [];\n}\nreturn [{ json: { run_id: r.run.id, input: r.run.input ?? {}, rules: r.rules ?? {} } }];"
+      }
+    },
+    {
+      "id": "015e1810-f8d0-4864-a618-1a1c391c22c0",
+      "position": [
+        240,
+        200
+      ],
+      "name": "Find unprocessed resumes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/resumes/pending",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "68934acd-d7bd-4922-a6e5-86f1728ef3dc",
+      "position": [
+        480,
+        200
+      ],
+      "name": "Split resumes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ids = ($input.first().json.resumes ?? []).map((r) => r.id);\nconst requested = $('Gate').first().json.input.resume_id;\nconst list = requested && !ids.includes(requested) ? [requested, ...ids] : ids;\nreturn list.length ? list.map((id) => ({ json: { resume_id: id } })) : [{ json: { noop: true } }];"
+      }
+    },
+    {
+      "id": "3f63716b-0a70-4579-a6fd-d0e714cb3f57",
+      "position": [
+        720,
+        200
+      ],
+      "name": "Extract & analyze",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.noop ? $env.APPLYPILOT_API_URL + '/health' : $env.APPLYPILOT_API_URL + '/internal/resumes/' + $json.resume_id + '/process' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 180000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 8000
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-ApplyPilot-Run-Id",
+              "value": "={{ $('Gate').first().json.run_id }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 20000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "0639ab82-63e7-4f9e-a4b6-222bd7381146",
+      "position": [
+        960,
+        200
+      ],
+      "name": "Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const errOf = (j) => {\n  if (!j || j.error === undefined) return null;\n  const e = j.error;\n  if (typeof e === 'string') return e;\n  return e.message || e.description || JSON.stringify(e).slice(0, 300);\n};\n\nconst reqs = $('Split resumes').all();\nconst item_errors = [];\nlet processed = 0;\n$input.all().forEach((it, i) => {\n  if (reqs[i]?.json.noop) return;\n  const err = errOf(it.json);\n  if (err) item_errors.push({ resume_id: reqs[i]?.json.resume_id, error: err });\n  else processed++;\n});\nreturn [{ json: { status: item_errors.length ? (processed ? 'partial' : 'failed') : 'succeeded', stats: { processed, failed: item_errors.length }, item_errors } }];"
+      }
+    },
+    {
+      "id": "8ac2a6b9-5c8d-40de-a118-83ac7e9a4cb8",
+      "position": [
+        1200,
+        200
+      ],
+      "name": "Finish run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/{{ $('Gate').first().json.run_id }}/finish",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: $('Summarize').first().json.status, stats: $('Summarize').first().json.stats, item_errors: $('Summarize').first().json.item_errors ?? [], output: $('Summarize').first().json.output ?? null }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Every 30 minutes": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run request": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve run": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate": {
+      "main": [
+        [
+          {
+            "node": "Find unprocessed resumes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find unprocessed resumes": {
+      "main": [
+        [
+          {
+            "node": "Split resumes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split resumes": {
+      "main": [
+        [
+          {
+            "node": "Extract & analyze",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract & analyze": {
+      "main": [
+        [
+          {
+            "node": "Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize": {
+      "main": [
+        [
+          {
+            "node": "Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "apErrorRecover09"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "applypilot": {
+      "description": "Extracts structured data and quality analysis for uploaded resumes."
+    }
+  },
+  "versionId": "d05794c9-6c40-4d49-ac0d-ccbf9e83c2f9"
+}

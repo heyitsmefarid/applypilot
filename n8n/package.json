@@ -1,0 +1,20 @@
+{
+  "name": "@applypilot/n8n",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Typed builders that generate the importable n8n workflow JSON files",
+  "scripts": {
+    "build": "tsx src/build.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsx src/build.ts --check && vitest run"
+  },
+  "dependencies": {
+    "@applypilot/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15"
+  }
+}

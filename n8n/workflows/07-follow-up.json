@@ -1,0 +1,295 @@
+{
+  "id": "apFollowUp000007",
+  "name": "ApplyPilot 07 · Application Follow-up",
+  "active": false,
+  "nodes": [
+    {
+      "id": "e1b5381d-2669-4cf0-a142-0a802de11fbd",
+      "position": [
+        0,
+        0
+      ],
+      "name": "Daily 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "1816ebc1-e02c-4915-af5d-e669ec673ac0",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Run request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "c6d42289-2201-40df-a1a2-809911609271",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "applypilot/follow-up",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apWebhookAuthKey",
+          "name": "ApplyPilot Webhook Auth"
+        }
+      }
+    },
+    {
+      "id": "7c721791-a957-4f07-af41-11991d0ba1a9",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Resolve run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Webhook calls carry { run_id, input } from the dispatcher (or push mode); schedules carry neither.\nconst first = $input.first().json;\nconst body = first.body ?? {};\nreturn [{ json: {\n  run_id: body.run_id ?? null,\n  trigger: body.run_id ? 'webhook' : 'schedule',\n  input: body.input ?? {},\n  execution_id: String($execution.id),\n} }];"
+      }
+    },
+    {
+      "id": "03940674-dc33-4438-a7dd-ebd5abe43d6f",
+      "position": [
+        480,
+        0
+      ],
+      "name": "Start run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/start",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'follow_up', run_id: $json.run_id, trigger: $json.trigger, n8n_execution_id: $json.execution_id, input: $json.input }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Creates/claims the run, checks the emergency pause",
+      "notesInFlow": true
+    },
+    {
+      "id": "3a758204-467c-4a2a-acf6-e871271763d0",
+      "position": [
+        720,
+        0
+      ],
+      "name": "Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nif (!r.proceed) {\n  // Paused, cancelled or already finished: the Worker recorded why. Returning no items ends this execution.\n  return [];\n}\nreturn [{ json: { run_id: r.run.id, input: r.run.input ?? {}, rules: r.rules ?? {} } }];"
+      }
+    },
+    {
+      "id": "2496bc1a-a1b9-412b-a634-eed7947b8b3a",
+      "position": [
+        240,
+        200
+      ],
+      "name": "Draft due follow-ups",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/followups/scan",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 240000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-ApplyPilot-Run-Id",
+              "value": "={{ $('Gate').first().json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Drafts only — sending needs your approval in the dashboard",
+      "notesInFlow": true
+    },
+    {
+      "id": "bfe67a9c-1e15-483b-a715-d8ed523b5987",
+      "position": [
+        480,
+        200
+      ],
+      "name": "Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nreturn [{ json: { status: 'succeeded', stats: { scanned: r.scanned ?? 0, drafted: r.drafted ?? 0, skipped: (r.skipped ?? []).length }, item_errors: r.skipped ?? [] } }];"
+      }
+    },
+    {
+      "id": "70015484-4cf6-4af1-a213-b4b54ff06c08",
+      "position": [
+        720,
+        200
+      ],
+      "name": "Finish run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/{{ $('Gate').first().json.run_id }}/finish",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: $('Summarize').first().json.status, stats: $('Summarize').first().json.stats, item_errors: $('Summarize').first().json.item_errors ?? [], output: $('Summarize').first().json.output ?? null }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Daily 09:00": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run request": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve run": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate": {
+      "main": [
+        [
+          {
+            "node": "Draft due follow-ups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft due follow-ups": {
+      "main": [
+        [
+          {
+            "node": "Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize": {
+      "main": [
+        [
+          {
+            "node": "Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "apErrorRecover09"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "applypilot": {
+      "description": "Finds applications without a reply and drafts follow-ups for approval."
+    }
+  },
+  "versionId": "c5fb23d3-131d-4105-abdc-a75f1425073c"
+}

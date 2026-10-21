@@ -1,0 +1,38 @@
+{
+  "name": "applypilot-ai",
+  "private": true,
+  "type": "module",
+  "description": "ApplyPilot AI — self-hosted AI job discovery and application automation platform",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "runner",
+    "n8n"
+  ],
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "scripts": {
+    "dev:web": "npm run dev -w @applypilot/web",
+    "dev:api": "npm run dev -w @applypilot/api",
+    "build": "npm run build -w @applypilot/web && npm run build -w @applypilot/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "test": "npm run test --workspaces --if-present && npm run test:db",
+    "n8n:build": "npm run build -w @applypilot/n8n",
+    "demo-site": "npm run demo-site -w @applypilot/runner",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build && npm run n8n:build",
+    "test:db": "vitest run supabase/tests"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10",
+    "@eslint/js": "^10.0.0",
+    "eslint": "^10.13.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.4.0",
+    "globals": "^16.0.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.0",
+    "vitest": "^5.0.5"
+  }
+}

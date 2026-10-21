@@ -1,0 +1,413 @@
+{
+  "id": "apJobMatching003",
+  "name": "ApplyPilot 03 · AI Job Matching",
+  "active": false,
+  "nodes": [
+    {
+      "id": "94f69206-3a92-4da8-a2f8-fb810f7ade80",
+      "position": [
+        0,
+        0
+      ],
+      "name": "Every 2 hours (sweep)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "f3e7a018-17bf-456f-a008-2a89cdcb05d0",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Run request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "e52bea01-7afc-4ae0-aceb-81a8067aeac1",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "applypilot/job-matching",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apWebhookAuthKey",
+          "name": "ApplyPilot Webhook Auth"
+        }
+      }
+    },
+    {
+      "id": "794ac72c-dff2-44d8-ac98-b82eea803bc8",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Resolve run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Webhook calls carry { run_id, input } from the dispatcher (or push mode); schedules carry neither.\nconst first = $input.first().json;\nconst body = first.body ?? {};\nreturn [{ json: {\n  run_id: body.run_id ?? null,\n  trigger: body.run_id ? 'webhook' : 'schedule',\n  input: body.input ?? {},\n  execution_id: String($execution.id),\n} }];"
+      }
+    },
+    {
+      "id": "40fd4f18-6d99-4b25-a958-553c1b292f06",
+      "position": [
+        480,
+        0
+      ],
+      "name": "Start run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/start",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'job_matching', run_id: $json.run_id, trigger: $json.trigger, n8n_execution_id: $json.execution_id, input: $json.input }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Creates/claims the run, checks the emergency pause",
+      "notesInFlow": true
+    },
+    {
+      "id": "de809413-2d51-4f4c-a295-aabc0dbc8fa2",
+      "position": [
+        720,
+        0
+      ],
+      "name": "Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nif (!r.proceed) {\n  // Paused, cancelled or already finished: the Worker recorded why. Returning no items ends this execution.\n  return [];\n}\nreturn [{ json: { run_id: r.run.id, input: r.run.input ?? {}, rules: r.rules ?? {} } }];"
+      }
+    },
+    {
+      "id": "587ef8de-3c62-427e-af3b-57f7da5c0f89",
+      "position": [
+        240,
+        200
+      ],
+      "name": "Jobs awaiting a score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/matching/pending",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ limit: 25, job_ids: $('Gate').first().json.input.job_ids }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "8473f6c1-e1b2-4959-a291-79ee1e91b490",
+      "position": [
+        480,
+        200
+      ],
+      "name": "Split jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const jobs = $input.first().json.jobs ?? [];\nreturn jobs.length ? jobs.map((j) => ({ json: j })) : [{ json: { noop: true } }];"
+      }
+    },
+    {
+      "id": "54e7ef29-086c-4d6f-a7b5-b4f86d045388",
+      "position": [
+        720,
+        200
+      ],
+      "name": "Score job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.noop ? $env.APPLYPILOT_API_URL + '/health' : $env.APPLYPILOT_API_URL + '/internal/matching/' + $json.job_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 6500
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ use_ai: $json.use_ai !== false }) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-ApplyPilot-Run-Id",
+              "value": "={{ $('Gate').first().json.run_id }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 30000,
+      "onError": "continueRegularOutput",
+      "notes": "Deterministic eligibility first; Gemini only for eligible jobs",
+      "notesInFlow": true
+    },
+    {
+      "id": "67175251-519a-4f9b-ae25-a0ccb60b80b1",
+      "position": [
+        960,
+        200
+      ],
+      "name": "Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const errOf = (j) => {\n  if (!j || j.error === undefined) return null;\n  const e = j.error;\n  if (typeof e === 'string') return e;\n  return e.message || e.description || JSON.stringify(e).slice(0, 300);\n};\n\nconst reqs = $('Split jobs').all();\nconst item_errors = [];\nconst prep = [];\nlet scored = 0, high = 0, eligible = 0, ai = 0;\n$input.all().forEach((it, i) => {\n  if (reqs[i]?.json.noop) return;\n  const err = errOf(it.json);\n  if (err) { item_errors.push({ job_id: reqs[i]?.json.job_id, error: err }); return; }\n  scored++;\n  if (it.json.eligible) eligible++;\n  if (it.json.high_match) high++;\n  if (it.json.used_ai) ai++;\n  if (it.json.auto_prepare) prep.push(it.json.job_id);\n});\nconst status = item_errors.length ? (scored ? 'partial' : 'failed') : 'succeeded';\nreturn [{ json: { status, stats: { scored, eligible, high_matches: high, ai_scored: ai, queued_for_prep: prep.length, failed: item_errors.length }, item_errors, prep_job_ids: prep } }];"
+      }
+    },
+    {
+      "id": "b75f17c9-4656-4446-a27d-3c684ed9d1ca",
+      "position": [
+        1200,
+        200
+      ],
+      "name": "Queue preparation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/enqueue-batch",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ runs: $json.prep_job_ids.length ? [{ workflow: 'application_prep', trigger: 'event', input: { job_ids: $json.prep_job_ids.slice(0, 10) }, idempotency_key: 'prep:' + $('Gate').first().json.run_id }] : [] }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Only for jobs meeting your auto-prepare rule (approval/auto modes)",
+      "notesInFlow": true
+    },
+    {
+      "id": "8608adf6-5e30-4859-a91a-f9c9a007a871",
+      "position": [
+        1440,
+        200
+      ],
+      "name": "Finish run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/{{ $('Gate').first().json.run_id }}/finish",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: $('Summarize').first().json.status, stats: $('Summarize').first().json.stats, item_errors: $('Summarize').first().json.item_errors ?? [], output: $('Summarize').first().json.output ?? null }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Every 2 hours (sweep)": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run request": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve run": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate": {
+      "main": [
+        [
+          {
+            "node": "Jobs awaiting a score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jobs awaiting a score": {
+      "main": [
+        [
+          {
+            "node": "Split jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split jobs": {
+      "main": [
+        [
+          {
+            "node": "Score job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score job": {
+      "main": [
+        [
+          {
+            "node": "Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize": {
+      "main": [
+        [
+          {
+            "node": "Queue preparation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue preparation": {
+      "main": [
+        [
+          {
+            "node": "Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "apErrorRecover09"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "applypilot": {
+      "description": "Scores new jobs against the verified resume and notifies about high matches."
+    }
+  },
+  "versionId": "79c2b33e-cf68-4570-ada4-1ef47953072a"
+}

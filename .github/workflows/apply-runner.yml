@@ -1,0 +1,55 @@
+name: Apply runner
+
+# Dispatched by the ApplyPilot Worker (POST /repos/{repo}/actions/workflows/apply-runner.yml/dispatches)
+# after every submission guard has passed. Only the run id is passed; the runner fetches the
+# approved payload from the Worker with RUNNER_API_TOKEN, so no personal data appears in inputs.
+#
+# Keep this repository PRIVATE: Actions logs include job titles and company names.
+# Required repository secrets: APPLYPILOT_API_URL, APPLYPILOT_RUNNER_TOKEN
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: ApplyPilot automation run id
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # One browser session at a time; never cancel a submission midway.
+  group: apply-runner
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUN_ID: ${{ inputs.run_id }}
+    steps:
+      - name: Validate run id
+        run: |
+          if ! [[ "$RUN_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "Invalid run id" >&2; exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+        working-directory: runner
+      - name: Start demo application site (used by demo jobs only)
+        run: |
+          nohup node runner/demo-site/server.mjs > /tmp/demo-site.log 2>&1 &
+          for i in $(seq 1 20); do curl -sf http://localhost:4321/ > /dev/null && break; sleep 0.5; done
+      - name: Run application
+        env:
+          APPLYPILOT_API_URL: ${{ secrets.APPLYPILOT_API_URL }}
+          APPLYPILOT_RUNNER_TOKEN: ${{ secrets.APPLYPILOT_RUNNER_TOKEN }}
+        run: npm run run -w @applypilot/runner -- --run-id "$RUN_ID"
+      # Evidence (screenshots) goes to the private Supabase "evidence" bucket — no artifacts are uploaded here.

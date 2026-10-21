@@ -1,0 +1,40 @@
+# Supabase CLI configuration (local development + `supabase db push`).
+project_id = "applypilot-ai"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 17
+
+[auth]
+enabled = true
+site_url = "http://localhost:5173"
+additional_redirect_urls = ["http://localhost:5173/**", "https://applypilot-ai.pages.dev/**"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+# Single-user system: no public registration. Create your account once in the
+# Supabase dashboard (Authentication → Users → Add user) or with `supabase` CLI.
+enable_signup = false
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enable_signup = false
+enable_confirmations = false
+secure_password_change = true
+
+[auth.rate_limit]
+sign_in_sign_ups = 10
+token_refresh = 150
+
+[storage]
+enabled = true
+file_size_limit = "10MiB"
+
+[realtime]
+enabled = true
