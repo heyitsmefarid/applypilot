@@ -12,7 +12,7 @@ import { useAction, useApplications, useIntegrations, useMessages } from '@/hook
 import { post } from '@/lib/api';
 import { supabase } from '@/lib/supabase';
 import type { RecruitmentMessage } from '@/lib/types';
-import { cn, formatDateTime, timeAgo } from '@/lib/utils';
+import { cn, formatDateTime, humanize, timeAgo } from '@/lib/utils';
 
 const tone = (c: string | null) => (c === 'offer' || c === 'interview' ? 'jade' : c === 'rejection' ? 'rose' : c === 'assessment' ? 'sky' : c === 'job_alert' ? 'outline' : 'neutral');
 
@@ -44,6 +44,9 @@ function MessageView({ m, onChange }: { m: RecruitmentMessage; onChange: () => v
             {EMAIL_CATEGORIES.map((k) => <option key={k} value={k}>{EMAIL_CATEGORY_LABELS[k]}</option>)}
           </NativeSelect>
           {m.confidence !== null && <span className="text-xs text-muted">{Math.round(Number(m.confidence) * 100)}% confidence · {m.classified_by}</span>}
+          <Badge tone={m.sender_verified ? 'jade' : 'amber'} title={m.sender_verified ? 'Gmail authenticated this sender (DKIM/SPF/DMARC)' : 'Gmail could not authenticate this sender — treat its claims with care'}>
+            {m.sender_verified ? 'Verified sender' : 'Unverified sender'}
+          </Badge>
           <span className="ml-auto inline-flex items-center gap-1.5 text-xs">
             <Link2 className="size-3.5 text-muted" />
             <NativeSelect aria-label="Linked application" className="h-7 w-56 text-xs" value={m.application_id ?? ''} onChange={(e) => update({ application_id: e.target.value || null })}>
@@ -53,10 +56,34 @@ function MessageView({ m, onChange }: { m: RecruitmentMessage; onChange: () => v
           </span>
         </div>
         {m.status_update && (
-          <p className={cn('rounded-[var(--radius-control)] px-3 py-2 text-xs', m.status_update.update ? 'bg-jade-soft text-jade' : 'bg-surface-2 text-ink-2')}>
-            {m.status_update.update ? `Application status updated to ${m.status_update.to}.` : `Status not changed: ${m.status_update.reason}`}
-            {m.application_id && <> <Link className="font-semibold underline" to={`/applications/${m.application_id}`}>Open application</Link></>}
-          </p>
+          <div className={cn('flex flex-wrap items-center gap-2 rounded-[var(--radius-control)] px-3 py-2 text-xs', m.status_update.update ? 'bg-jade-soft text-jade' : m.status_update.suggested ? 'bg-amber-soft text-amber' : 'bg-surface-2 text-ink-2')}>
+            <span className="min-w-0 flex-1">
+              {m.status_update.update
+                ? `Application status updated to ${humanize(m.status_update.to)}.`
+                : m.status_update.suggested
+                  ? `Suggested status: ${humanize(m.status_update.to)}. ${m.status_update.reason}`
+                  : `Status not changed: ${m.status_update.reason}`}
+              {m.application_id && <> <Link className="font-semibold underline" to={`/applications/${m.application_id}`}>Open application</Link></>}
+            </span>
+            {m.status_update.suggested && m.application_id && m.status_update.to && (
+              <ConfirmDialog
+                trigger={<Button size="sm">Apply suggested status</Button>}
+                title={`Mark application as ${humanize(m.status_update.to)}?`}
+                description={<>This email's sender couldn't be verified, so ApplyPilot didn't change the status itself. Apply it only if you've read the email and trust it.</>}
+                confirmLabel={`Mark as ${humanize(m.status_update.to)}`}
+                onConfirm={async () => {
+                  const to = m.status_update!.to!;
+                  const patch: Record<string, unknown> = { status: to, status_source: 'user' };
+                  if (to === 'applied') Object.assign(patch, { submitted_at: m.received_at, confirmed_by: 'manual' });
+                  const { error } = await supabase.from('applications').update(patch).eq('id', m.application_id!);
+                  if (error) return toast.error(error.message);
+                  await supabase.from('recruitment_messages').update({ status_update: { ...m.status_update, update: true, suggested: false, reason: 'Applied by you.' } }).eq('id', m.id);
+                  toast.success(`Marked as ${humanize(to)}`);
+                  onChange();
+                }}
+              />
+            )}
+          </div>
         )}
         {c?.summary && (
           <div className="rounded-[var(--radius-control)] border border-line bg-surface-2/50 p-3 text-[13px]">

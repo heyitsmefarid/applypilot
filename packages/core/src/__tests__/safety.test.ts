@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { decideSubmission, shouldAutoPrepare, type AutomationRules, type SubmissionCandidate } from '../autoapply.js';
-import { decideStatusFromEmail, heuristicClassify, isLikelyRecruitmentEmail, matchEmailToApplication } from '../email.js';
+import { decideStatusFromEmail, heuristicClassify, isLikelyRecruitmentEmail, isTrustedSender, matchEmailToApplication, senderAuthenticated } from '../email.js';
 import { guardAgainstFabrication } from '../fabrication.js';
 import { followUpDue } from '../followup.js';
 import { toGeminiSchema } from '../prompts/gemini-schema.js';
@@ -108,11 +108,32 @@ describe('email rules', () => {
     expect(heuristicClassify({ from: 'hr@acme.com', subject: 'Update', body: 'Unfortunately we will not be moving forward' }).category).toBe('rejection');
   });
   it('only changes status on clear, forward-moving evidence', () => {
-    expect(decideStatusFromEmail('interview', 0.95, 'applied')).toMatchObject({ update: true, to: 'interview' });
-    expect(decideStatusFromEmail('interview', 0.6, 'applied').update).toBe(false);
-    expect(decideStatusFromEmail('acknowledgment', 0.99, 'interview').update).toBe(false);
-    expect(decideStatusFromEmail('rejection', 0.9, 'interview')).toMatchObject({ update: true, to: 'rejected' });
-    expect(decideStatusFromEmail('interview', 0.9, null).update).toBe(false);
+    expect(decideStatusFromEmail('interview', 0.95, 'applied', true)).toMatchObject({ update: true, suggested: false, to: 'interview' });
+    expect(decideStatusFromEmail('interview', 0.6, 'applied', true).update).toBe(false);
+    expect(decideStatusFromEmail('acknowledgment', 0.99, 'interview', true).update).toBe(false);
+    expect(decideStatusFromEmail('rejection', 0.9, 'interview', true)).toMatchObject({ update: true, to: 'rejected' });
+    expect(decideStatusFromEmail('interview', 0.9, null, true).update).toBe(false);
+  });
+  it('never auto-changes status for an unverified sender — only suggests', () => {
+    // A crafted "offer" email (or prompt injection convincing the model) from an unverified sender.
+    expect(decideStatusFromEmail('offer', 0.99, 'applied')).toMatchObject({ update: false, suggested: true, to: 'offer' });
+    expect(decideStatusFromEmail('offer', 0.99, 'applied', false).update).toBe(false);
+  });
+  it('reads only Gmail-authenticated, domain-aligned senders as verified', () => {
+    const gmail = 'mx.google.com; dkim=pass header.i=@acme.com header.s=s1 header.b=abc; spf=pass (google.com: domain of jobs@acme.com designates 1.2.3.4 as permitted sender) smtp.mailfrom=jobs@acme.com; dmarc=pass (p=REJECT) header.from=acme.com';
+    expect(senderAuthenticated(gmail, 'Talent <jobs@acme.com>')).toBe(true);
+    expect(senderAuthenticated(gmail, 'hr@acme-careers.com')).toBe(false);
+    expect(senderAuthenticated('mx.google.com; dkim=fail header.i=@acme.com; spf=softfail smtp.mailfrom=x@acme.com; dmarc=fail header.from=acme.com', 'jobs@acme.com')).toBe(false);
+    expect(senderAuthenticated('evil.example; dkim=pass header.i=@acme.com', 'jobs@acme.com')).toBe(false);
+    expect(senderAuthenticated(null, 'jobs@acme.com')).toBe(false);
+  });
+  it('trusts a verified sender only for its own employer or a hiring platform', () => {
+    const app = { company_domain: 'acme.com', apply_url: 'https://boards.greenhouse.io/acme/jobs/1' };
+    expect(isTrustedSender('jobs@mail.acme.com', app, true)).toBe(true);
+    expect(isTrustedSender('no-reply@greenhouse.io', { company_domain: null, apply_url: null }, true)).toBe(true);
+    expect(isTrustedSender('recruiter@acme-hiring.net', app, true)).toBe(false);
+    expect(isTrustedSender('jobs@acme.com', app, false)).toBe(false);
+    expect(isTrustedSender('someone@gmail.com', app, true)).toBe(false);
   });
   it('links emails to applications only when unambiguous', () => {
     const apps = [
