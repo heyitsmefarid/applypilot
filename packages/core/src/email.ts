@@ -73,34 +73,41 @@ const STATUS_RANK: Partial<Record<ApplicationStatus, number>> = {
 
 export interface StatusUpdateDecision {
   update: boolean;
+  /** The change looks right but the sender is unverified — show it for the user to approve. */
+  suggested: boolean;
   to: ApplicationStatus | null;
   reason: string;
 }
 
 /**
- * Only clear evidence changes a status: high confidence, a linked application, a category that
- * maps to a status, and no backwards transitions. Everything else becomes a notification only.
+ * Only clear evidence changes a status automatically: high confidence, a linked application, a
+ * category that maps to a status, no backwards transitions, AND a verified sender who belongs to
+ * the application (see isTrustedSender). Email content and the model's reading of it are untrusted,
+ * so an unverified sender can at most produce a suggestion the user approves.
  */
 export function decideStatusFromEmail(
   category: EmailCategory,
   confidence: number,
   current: ApplicationStatus | null,
+  trustedSender = false,
 ): StatusUpdateDecision {
+  const no = (to: ApplicationStatus | null, reason: string): StatusUpdateDecision => ({ update: false, suggested: false, to, reason });
   const to = CATEGORY_TO_STATUS[category] ?? null;
-  if (!current) return { update: false, to, reason: 'Email is not linked to an application.' };
-  if (!to) return { update: false, to: null, reason: `Category "${category}" does not change status.` };
-  if (confidence < EMAIL_STATUS_UPDATE_MIN_CONFIDENCE) {
-    return { update: false, to, reason: `Confidence ${confidence.toFixed(2)} is below ${EMAIL_STATUS_UPDATE_MIN_CONFIDENCE}.` };
-  }
-  if (['withdrawn', 'closed', 'offer'].includes(current) && to !== 'offer') return { update: false, to, reason: `Application is already ${current}.` };
-  if (current === to) return { update: false, to, reason: 'Status already up to date.' };
+  if (!current) return no(to, 'Email is not linked to an application.');
+  if (!to) return no(null, `Category "${category}" does not change status.`);
+  if (confidence < EMAIL_STATUS_UPDATE_MIN_CONFIDENCE) return no(to, `Confidence ${confidence.toFixed(2)} is below ${EMAIL_STATUS_UPDATE_MIN_CONFIDENCE}.`);
+  if (['withdrawn', 'closed', 'offer'].includes(current) && to !== 'offer') return no(to, `Application is already ${current}.`);
+  if (current === to) return no(to, 'Status already up to date.');
   if (to === 'applied' && !['submission_in_progress', 'awaiting_approval', 'draft_prepared', 'saved', 'discovered', 'submission_failed'].includes(current)) {
-    return { update: false, to, reason: 'Acknowledgment does not move an advanced application backwards.' };
+    return no(to, 'Acknowledgment does not move an advanced application backwards.');
   }
   const curRank = STATUS_RANK[current] ?? 0;
   const toRank = STATUS_RANK[to] ?? 0;
-  if (to !== 'rejected' && toRank < curRank) return { update: false, to, reason: 'Would move status backwards.' };
-  return { update: true, to, reason: `High-confidence ${category} email.` };
+  if (to !== 'rejected' && toRank < curRank) return no(to, 'Would move status backwards.');
+  if (!trustedSender) {
+    return { update: false, suggested: true, to, reason: 'Sender could not be verified as this employer or its hiring platform — review the email and apply the suggested status yourself.' };
+  }
+  return { update: true, suggested: false, to, reason: `High-confidence ${category} email from a verified sender.` };
 }
 
 export interface ApplicationRef {
@@ -108,24 +115,70 @@ export interface ApplicationRef {
   company: string;
   job_title: string;
   company_domain?: string | null;
+  apply_url?: string | null;
   status: ApplicationStatus;
+}
+
+/** Registrable-ish domain ("mail.acme.com" → "acme.com"). Naive, but sufficient for alignment checks. */
+function baseDomain(host: string | null | undefined): string | null {
+  if (!host) return null;
+  const h = host.toLowerCase().replace(/^.*@/, '').replace(/[>\s]+$/, '');
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(h)) return null;
+  return h.split('.').slice(-2).join('.');
 }
 
 function senderDomain(from: string): string | null {
   const m = from.match(/@([a-z0-9.-]+\.[a-z]{2,})/i);
-  if (!m) return null;
-  const parts = m[1]!.toLowerCase().split('.');
-  return parts.slice(-2).join('.');
+  return m ? baseDomain(m[1]) : null;
 }
 
 const ATS_DOMAINS = new Set(['greenhouse.io', 'lever.co', 'ashbyhq.com', 'workable.com', 'smartrecruiters.com', 'myworkdayjobs.com', 'icims.com', 'bamboohr.com', 'kalibrr.com', 'jobstreet.com', 'linkedin.com', 'indeed.com', 'gmail.com']);
 
+/** Hiring platforms whose authenticated mail may update any application's status. */
+const HIRING_PLATFORM_DOMAINS = new Set(['greenhouse.io', 'lever.co', 'ashbyhq.com', 'workable.com', 'smartrecruiters.com', 'myworkdayjobs.com', 'workday.com', 'icims.com', 'bamboohr.com', 'jobvite.com', 'teamtailor.com', 'recruitee.com', 'breezy.hr', 'kalibrr.com', 'jobstreet.com', 'linkedin.com', 'indeed.com']);
+
 /**
- * Links an email to an application using sender domain, company name and role title.
+ * Reads Gmail's own Authentication-Results header (the caller passes only the first one, which
+ * mx.google.com prepends) and reports whether DKIM, SPF or DMARC passed for the From domain.
+ */
+export function senderAuthenticated(authResults: string | null | undefined, fromEmail: string): boolean {
+  const from = senderDomain(fromEmail) ?? baseDomain(fromEmail);
+  if (!from || !authResults) return false;
+  const h = authResults.toLowerCase().replace(/\s+/g, ' ');
+  if (!h.trimStart().startsWith('mx.google.com')) return false;
+  const aligned = (d: string | undefined) => baseDomain(d) === from;
+  for (const m of h.matchAll(/dkim=pass[^;]*?header\.(?:d|i)=@?([a-z0-9.-]+)/g)) if (aligned(m[1])) return true;
+  for (const m of h.matchAll(/spf=pass[^;]*?smtp\.mailfrom=(?:[^@\s;]*@)?([a-z0-9.-]+)/g)) if (aligned(m[1])) return true;
+  for (const m of h.matchAll(/dmarc=pass[^;]*?header\.from=([a-z0-9.-]+)/g)) if (aligned(m[1])) return true;
+  return false;
+}
+
+/**
+ * A sender may change an application's status only when Gmail authenticated it and its domain is
+ * the employer's own (company or apply-link domain) or a recognised hiring platform.
+ */
+export function isTrustedSender(fromEmail: string, app: Pick<ApplicationRef, 'company_domain' | 'apply_url'> | null, authenticated: boolean): boolean {
+  if (!authenticated || !app) return false;
+  const d = senderDomain(fromEmail);
+  if (!d) return false;
+  if (HIRING_PLATFORM_DOMAINS.has(d)) return true;
+  const applyHost = (() => {
+    try {
+      return app.apply_url ? new URL(app.apply_url).hostname : null;
+    } catch {
+      return null;
+    }
+  })();
+  return [baseDomain(app.company_domain), baseDomain(applyHost)].includes(d);
+}
+
+/**
+ * Links an email to an application using sender domain, company name and role title found in the
+ * email itself. Deterministic on purpose: the model's reading of the email is never used to link it.
  * Returns null unless exactly one application is a convincing match.
  */
 export function matchEmailToApplication(
-  email: EmailLike & { aiCompany?: string; aiTitle?: string },
+  email: EmailLike,
   applications: ApplicationRef[],
 ): { applicationId: string; score: number } | null {
   const domain = senderDomain(email.from);
@@ -137,10 +190,8 @@ export function matchEmailToApplication(
     if (a.company_domain && domain && a.company_domain.toLowerCase().endsWith(domain)) score += 4;
     if (domain && !ATS_DOMAINS.has(domain) && companyToken.length > 2 && domain.includes(companyToken)) score += 3;
     if (company && ` ${text} `.includes(` ${company} `)) score += 3;
-    if (email.aiCompany && normalizeCompany(email.aiCompany) === company) score += 3;
     const title = normalizeText(a.job_title);
     if (title && text.includes(title)) score += 2;
-    if (email.aiTitle && normalizeText(email.aiTitle) === title) score += 1;
     return { applicationId: a.id, score };
   });
   scored.sort((x, y) => y.score - x.score);

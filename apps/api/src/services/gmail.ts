@@ -4,8 +4,10 @@ import {
   EMAIL_CATEGORY_LABELS,
   heuristicClassify,
   isLikelyRecruitmentEmail,
+  isTrustedSender,
   matchEmailToApplication,
   PROMPTS,
+  senderAuthenticated,
   stripHtml,
   type ApplicationStatus,
   type EmailCategory,
@@ -210,6 +212,9 @@ export async function syncGmail(env: Env, db: Db, userId: string, opts: { max?: 
     const msg = await gmailFetch<{ id: string; threadId: string; snippet: string; labelIds?: string[]; internalDate: string; payload: GmailPart }>(token, `/messages/${id}?format=full`);
     const header = (n: string) => msg.payload.headers?.find((h) => h.name.toLowerCase() === n)?.value ?? '';
     const from = parseFrom(header('from'));
+    // Only the first Authentication-Results header is Gmail's own (mx.google.com prepends it);
+    // later ones can be supplied by the sender and are ignored.
+    const senderVerified = senderAuthenticated(header('authentication-results'), from.email);
     const { text, html } = extractBodies(msg.payload);
     const body = (text || stripHtml(html)).slice(0, 20_000);
     const receivedAt = new Date(Number(msg.internalDate)).toISOString();
@@ -236,6 +241,7 @@ export async function syncGmail(env: Env, db: Db, userId: string, opts: { max?: 
       confidence: category ? 0.95 : null,
       classified_by: category ? 'heuristic' : null,
       processed_status: category ? 'classified' : 'new',
+      sender_verified: senderVerified,
     });
   }
   if (rows.length) unwrap(await db.from('recruitment_messages').upsert(rows, { onConflict: 'user_id,gmail_message_id', ignoreDuplicates: true }).select('id'), 'store messages');
@@ -264,9 +270,9 @@ export async function classifyMessage(ai: AiContext, messageId: string) {
     return { category: 'other', ignored: true };
   }
   const apps = unwrap(
-    await db.from('applications').select('id, company, job_title, company_domain, status').eq('user_id', userId).not('status', 'in', '(withdrawn,closed)').order('updated_at', { ascending: false }).limit(60),
+    await db.from('applications').select('id, company, job_title, company_domain, apply_url, status').eq('user_id', userId).not('status', 'in', '(withdrawn,closed)').order('updated_at', { ascending: false }).limit(60),
     'load applications',
-  ) as Array<{ id: string; company: string; job_title: string; company_domain: string | null; status: ApplicationStatus }>;
+  ) as Array<{ id: string; company: string; job_title: string; company_domain: string | null; apply_url: string | null; status: ApplicationStatus }>;
   const profile = await getProfile(db, userId);
 
   let category: EmailCategory;
@@ -291,28 +297,33 @@ export async function classifyMessage(ai: AiContext, messageId: string) {
     classifiedBy = 'heuristic';
   }
 
-  const linked = matchEmailToApplication({ ...email, aiCompany: (classification?.company as string) || undefined, aiTitle: (classification?.job_title as string) || undefined }, apps);
+  // Email content and the model's output are untrusted: linking is deterministic, and only a
+  // Gmail-verified sender that belongs to the application may change its state.
+  const linked = matchEmailToApplication(email, apps);
   const app = linked ? apps.find((a) => a.id === linked.applicationId) ?? null : null;
-  const decision = decideStatusFromEmail(category, confidence, app?.status ?? null);
+  const trusted = isTrustedSender(msg.from_email as string, app, Boolean(msg.sender_verified));
+  const decision = decideStatusFromEmail(category, confidence, app?.status ?? null, trusted);
   const receivedAt = msg.received_at as string;
 
   if (app) {
-    const patch: Record<string, unknown> = { last_employer_message_at: receivedAt };
-    if (decision.update && decision.to) {
-      patch.status = decision.to;
-      patch.status_source = 'gmail';
-      if (decision.to === 'applied') Object.assign(patch, { submitted_at: receivedAt, confirmed_by: 'email' });
+    if (trusted) {
+      const patch: Record<string, unknown> = { last_employer_message_at: receivedAt };
+      if (decision.update && decision.to) {
+        patch.status = decision.to;
+        patch.status_source = 'gmail';
+        if (decision.to === 'applied') Object.assign(patch, { submitted_at: receivedAt, confirmed_by: 'email' });
+      }
+      if (category !== 'job_alert' && msg.from_email && !/no-?reply|noreply/i.test(msg.from_email as string)) patch.recruiter_email = msg.from_email;
+      if (msg.from_name && patch.recruiter_email) patch.recruiter_name = msg.from_name;
+      await db.from('applications').update(patch).eq('id', app.id);
     }
-    if (category !== 'job_alert' && msg.from_email && !/no-?reply|noreply/i.test(msg.from_email as string)) patch.recruiter_email = msg.from_email;
-    if (msg.from_name && patch.recruiter_email) patch.recruiter_name = msg.from_name;
-    await db.from('applications').update(patch).eq('id', app.id);
     await db.from('application_events').insert({
       user_id: userId,
       application_id: app.id,
       type: 'email',
       actor: 'gmail',
-      message: `${EMAIL_CATEGORY_LABELS[category]} email: "${String(msg.subject).slice(0, 140)}"${decision.update ? ` → ${decision.to}` : ''}`,
-      metadata: { message_id: messageId, confidence, decision },
+      message: `${EMAIL_CATEGORY_LABELS[category]} email: "${String(msg.subject).slice(0, 140)}"${decision.update ? ` → ${decision.to}` : decision.suggested ? ` (suggested: ${decision.to})` : ''}`,
+      metadata: { message_id: messageId, confidence, decision, sender_verified: Boolean(msg.sender_verified), trusted },
     });
   }
 
@@ -330,7 +341,8 @@ export async function classifyMessage(ai: AiContext, messageId: string) {
       timezone: interview?.timezone || profile.timezone,
       location: interview?.location ?? '',
       meeting_url: (interview?.meeting_url ?? '').startsWith('https://') ? interview!.meeting_url : '',
-      status: scheduled ? 'scheduled' : 'needs_confirmation',
+      // An unverified sender's invitation is never auto-scheduled.
+      status: scheduled && trusted ? 'scheduled' : 'needs_confirmation',
       source: 'email',
     });
   }

@@ -105,9 +105,11 @@ a shared header secret. If the push fails, the run is released back to `queued`.
    uploads screenshots and posts the result. The Worker marks the application `applied`
    **only** when there is evidence.
 6. **Gmail** (Workflow 6): incremental sync (Gmail search query + `historyId`) →
-   keyword pre-filter → Gemini classification → linking to an application by company
-   and domain → a status change only when confidence ≥ 0.85 and the category maps
-   cleanly. Reply drafts are saved and **never sent without explicit approval**.
+   keyword pre-filter → Gemini classification → deterministic linking to an application
+   (sender domain, company and title in the email) → an automatic status change only for a
+   Gmail-verified sender belonging to that employer or a hiring platform, with confidence
+   ≥ 0.85. Anything else becomes a suggestion you approve. Reply drafts are saved and
+   **never sent without explicit approval**.
 
 ## 3. Repository layout
 

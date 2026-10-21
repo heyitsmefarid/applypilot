@@ -284,7 +284,8 @@ export interface RecruitmentMessage {
   classification: Record<string, unknown> | null;
   classified_by: 'ai' | 'heuristic' | 'user' | null;
   application_id: string | null;
-  status_update: { update: boolean; to: string | null; reason: string } | null;
+  status_update: { update: boolean; suggested?: boolean; to: ApplicationStatus | null; reason: string } | null;
+  sender_verified: boolean;
   processed_status: 'new' | 'classified' | 'ignored' | 'error';
   suggested_reply: string | null;
   is_important: boolean;

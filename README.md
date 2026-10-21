@@ -28,7 +28,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design, including 
 | **Applications** | Tailored resume, cover letter, application email and screening answers for each job, with version history and approval. A Kanban board and table cover 13 statuses, with the status history and audit trail. |
 | **Automation modes** | **Manual**, **Approval** (prefill for review, then you approve) and **Conditional auto-apply** (explicit opt-in, allowed sources, minimum score and salary, excluded companies, daily cap). An emergency pause is always visible. |
 | **Playwright** | Fills forms only on allow-listed hosts. It **stops at CAPTCHAs** and sends the application to the manual queue. It captures screenshots and a confirmation reference. An application is marked *applied* **only with evidence**, or when you confirm it manually. |
-| **Gmail** | OAuth 2.0 with AES-256-GCM token storage. Incremental sync imports job alerts and classifies employer replies. A status changes only at ≥ 0.85 confidence. Interviews are extracted into a calendar view (.ics). Reply and follow-up drafts are **sent only after you confirm**. |
+| **Gmail** | OAuth 2.0 with AES-256-GCM token storage. Incremental sync imports job alerts and classifies employer replies. Statuses change automatically only for Gmail-verified employer or ATS senders at ≥ 0.85 confidence; anything else is a suggestion you approve. Interviews are extracted into a calendar view (.ics). Reply and follow-up drafts are **sent only after you confirm**. |
 | **n8n** | 10 importable workflows: dispatcher, discovery, resume analysis, matching, preparation, submission, Gmail, follow-up, reports (in-app, Gmail and Telegram) and error recovery (retries with backoff). |
 
 ## Repository layout

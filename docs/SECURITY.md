@@ -52,8 +52,16 @@ are the controls in place and the threats each one addresses.
   stripped, it's truncated, and phrases that look like prompt injection are flagged to the model as data.
 - Every response is constrained by a JSON schema and validated with Zod, with one repair retry.
 - The model never decides consequential actions. Scores are computed in code, eligibility is
-  deterministic, status changes need ≥ 0.85 confidence plus forward-only transitions, and
-  submissions go through the rules above.
+  deterministic, and submissions go through the rules above.
+- **Email-driven status changes** treat both the email and the model's reading of it as untrusted:
+  - Emails are linked to applications deterministically (sender domain, plus company name and job
+    title found in the email), never through the company or title the model extracts.
+  - A status changes automatically only when Gmail's own `Authentication-Results` header shows
+    DKIM, SPF or DMARC passing for the From domain, *and* that domain is the employer's
+    (company or apply-link domain) or a known hiring platform, *and* confidence is ≥ 0.85 with a
+    forward-only transition.
+  - Otherwise the change is stored as a **suggestion** that you apply from the inbox. Unverified
+    senders also can't set the recruiter address, suppress follow-ups or auto-schedule interviews.
 - The **fabrication guard** compares every AI rewrite with the verified resume. It removes
   unsupported employers, skills, certifications, technologies, links and new numeric claims, and
   restores identity fields and dates. Each violation is shown to the user.
