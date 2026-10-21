@@ -1,0 +1,72 @@
+# ApplyPilot AI — self-hosted n8n (Community Edition)
+#
+#   cp .env.example .env      # fill in secrets
+#   docker compose up -d      # http://localhost:5678
+#   ./scripts/setup.sh        # (or scripts/setup.ps1) import credentials + workflows
+#
+# n8n only makes OUTBOUND HTTPS calls (to the Worker API and job sources), so nothing has to be
+# exposed to the internet. The editor is bound to 127.0.0.1. The optional `tunnel` profile adds a
+# Cloudflare Tunnel for instant push of dashboard commands (see docs/N8N.md).
+
+name: applypilot-n8n
+
+services:
+  n8n:
+    image: n8nio/n8n:2.44.4
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"
+    # Lets the container reach `wrangler dev` on the host (Docker Desktop provides this already).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Persistence & security
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?Set N8N_ENCRYPTION_KEY in .env (keep a backup — credentials are unreadable without it)}
+      N8N_USER_MANAGEMENT_JWT_SECRET: ${N8N_JWT_SECRET:?Set N8N_JWT_SECRET in .env}
+      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-false}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_PUBLIC_API_DISABLED: "true"
+      # Time zone used by every Schedule Trigger
+      GENERIC_TIMEZONE: ${TIMEZONE:-Asia/Manila}
+      TZ: ${TIMEZONE:-Asia/Manila}
+      # Code nodes run in the built-in task runner; workflows read only these non-secret env vars.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      APPLYPILOT_API_URL: ${APPLYPILOT_API_URL:?Set APPLYPILOT_API_URL (Worker URL) in .env}
+      N8N_INTERNAL_WEBHOOK_BASE: http://localhost:5678
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      # Execution history housekeeping (keeps the SQLite database small)
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "168"
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: "5000"
+      EXECUTIONS_DATA_SAVE_ON_SUCCESS: "all"
+      EXECUTIONS_TIMEOUT: "3600"
+      EXECUTIONS_TIMEOUT_MAX: "7200"
+      N8N_PAYLOAD_SIZE_MAX: "64"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/workflows:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # Optional: expose ONLY n8n webhooks through Cloudflare Tunnel (free) for instant push mode.
+  #   docker compose --profile tunnel up -d
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.1
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - n8n
+
+volumes:
+  n8n_data:

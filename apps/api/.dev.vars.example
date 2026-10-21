@@ -1,0 +1,32 @@
+# Copy to .dev.vars for `wrangler dev`. Never commit real values.
+# Generate random secrets with:  node -e "console.log(crypto.randomBytes(32).toString('base64'))"
+
+SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+# Secret key (sb_secret_...) or legacy service_role key — server-side only.
+SUPABASE_SECRET_KEY=
+# Optional: legacy HS256 JWT secret. Leave empty to verify with the project's JWKS (asymmetric keys).
+SUPABASE_JWT_SECRET=
+# The only account allowed to use the API.
+ALLOWED_USER_EMAIL=you@example.com
+
+# Google AI Studio API key (free tier). https://aistudio.google.com/apikey
+GEMINI_API_KEY=
+
+# Shared secrets
+INTERNAL_API_TOKEN=change-me-n8n-token
+RUNNER_API_TOKEN=change-me-runner-token
+TOKEN_ENCRYPTION_KEY=base64-32-bytes
+STATE_SIGNING_KEY=base64-32-bytes
+
+# Google OAuth (Gmail) — Web application client
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=http://localhost:8787/oauth/google/callback
+
+# Optional push mode to n8n through a Cloudflare Tunnel (otherwise n8n polls the queue)
+N8N_WEBHOOK_BASE_URL=
+N8N_WEBHOOK_TOKEN=
+
+# Optional GitHub Actions dispatch for the Playwright runner
+GITHUB_TOKEN=
+GITHUB_REPO=your-github-user/applypilot-ai

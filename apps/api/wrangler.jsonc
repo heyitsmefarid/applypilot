@@ -1,0 +1,31 @@
+{
+  // Cloudflare Workers (free plan) — ApplyPilot AI backend API.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "applypilot-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // Independent maintenance only (n8n owns all business schedules):
+  //   every 15 min → reap stale runs + n8n heartbeat watchdog.
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "vars": {
+    "APP_URL": "http://localhost:5173",
+    "CORS_ORIGINS": "http://localhost:5173",
+    "GEMINI_MODEL_FAST": "gemini-3.5-flash-lite",
+    // Writing tasks (enhance, tailor, cover letter). Flash-Lite rewrote a full resume in ~8 s;
+    // gemini-3.8-flash took ~90 s for the same request — set it here only if you accept that wait.
+    "GEMINI_MODEL_QUALITY": "gemini-3.5-flash-lite",
+    "GEMINI_API_STYLE": "interactions",
+    "GEMINI_RPM": "10",
+    "GITHUB_WORKFLOW": "apply-runner.yml",
+    "GITHUB_REF": "main",
+    "RUNNER_ALLOWED_HOSTS": "localhost,127.0.0.1"
+  }
+  // Secrets (set with `wrangler secret put NAME`, or .dev.vars locally):
+  //   SUPABASE_URL, SUPABASE_SECRET_KEY, SUPABASE_JWT_SECRET (optional, legacy HS256),
+  //   ALLOWED_USER_EMAIL, GEMINI_API_KEY, INTERNAL_API_TOKEN, RUNNER_API_TOKEN,
+  //   TOKEN_ENCRYPTION_KEY, STATE_SIGNING_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+  //   GOOGLE_REDIRECT_URI, N8N_WEBHOOK_BASE_URL (optional), N8N_WEBHOOK_TOKEN (optional),
+  //   GITHUB_TOKEN (optional), GITHUB_REPO (optional)
+}

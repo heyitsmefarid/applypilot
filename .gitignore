@@ -1,0 +1,26 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.env.*
+!.env.example
+!.dev.vars.example
+*.log
+coverage/
+.DS_Store
+Thumbs.db
+
+# Playwright
+runner/test-results/
+runner/playwright-report/
+runner/output/
+runner/demo-site/submissions/*.json
+
+# n8n local data (never commit credentials)
+n8n/data/
+n8n/.secrets/
+
+# Supabase local
+supabase/.branches/
+supabase/.temp/

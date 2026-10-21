@@ -1,0 +1,539 @@
+{
+  "id": "apReports0000008",
+  "name": "ApplyPilot 08 · Notifications & Reports",
+  "active": false,
+  "nodes": [
+    {
+      "id": "0f46da6b-4d06-4f00-aa92-a9c1b33c48f7",
+      "position": [
+        0,
+        0
+      ],
+      "name": "Daily summary 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "f7cba1f6-8b62-4aad-ac4d-7f88c87d2a09",
+      "position": [
+        240,
+        200
+      ],
+      "name": "Set daily",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { body: { input: { kind: 'daily' } } } }];"
+      }
+    },
+    {
+      "id": "6f905750-0f46-456e-a744-bf628a94861c",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Weekly statistics Mon 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "e1d1400a-95b1-4c07-a6db-25dae2379529",
+      "position": [
+        480,
+        200
+      ],
+      "name": "Set weekly",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { body: { input: { kind: 'weekly' } } } }];"
+      }
+    },
+    {
+      "id": "24d61876-b455-4c84-aec3-e80dae6e9136",
+      "position": [
+        480,
+        0
+      ],
+      "name": "Interview reminders hourly",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ec39e1de-24b7-4049-abea-42791207cc97",
+      "position": [
+        720,
+        200
+      ],
+      "name": "Set interviews",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { body: { input: { kind: 'interviews' } } } }];"
+      }
+    },
+    {
+      "id": "27f7cb21-e118-4d7f-a9a1-2df11350f372",
+      "position": [
+        720,
+        0
+      ],
+      "name": "Pending approvals 18:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 18 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "64fbc5c1-aaff-4eeb-a179-0c37f4c2dfb1",
+      "position": [
+        960,
+        200
+      ],
+      "name": "Set approvals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { body: { input: { kind: 'approvals' } } } }];"
+      }
+    },
+    {
+      "id": "ba286fe4-e9b5-402a-a58e-3af45b01fc14",
+      "position": [
+        1200,
+        200
+      ],
+      "name": "Run request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "e6bb5a75-6bf5-420e-ae27-48d3409a2046",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "applypilot/reports",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apWebhookAuthKey",
+          "name": "ApplyPilot Webhook Auth"
+        }
+      }
+    },
+    {
+      "id": "5a1378cb-1e11-4874-ae68-14d30e56c062",
+      "position": [
+        240,
+        400
+      ],
+      "name": "Resolve run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Webhook calls carry { run_id, input } from the dispatcher (or push mode); schedules carry neither.\nconst first = $input.first().json;\nconst body = first.body ?? {};\nreturn [{ json: {\n  run_id: body.run_id ?? null,\n  trigger: body.run_id ? 'webhook' : 'schedule',\n  input: body.input ?? {},\n  execution_id: String($execution.id),\n} }];"
+      }
+    },
+    {
+      "id": "72eafedd-8255-403d-a069-5dd1afe271eb",
+      "position": [
+        480,
+        400
+      ],
+      "name": "Start run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/start",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'reports', run_id: $json.run_id, trigger: $json.trigger, n8n_execution_id: $json.execution_id, input: $json.input }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Creates/claims the run, checks the emergency pause",
+      "notesInFlow": true
+    },
+    {
+      "id": "35caabb6-17ec-4fa8-a854-df3ddb504bf9",
+      "position": [
+        720,
+        400
+      ],
+      "name": "Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nif (!r.proceed) {\n  // Paused, cancelled or already finished: the Worker recorded why. Returning no items ends this execution.\n  return [];\n}\nreturn [{ json: { run_id: r.run.id, input: r.run.input ?? {}, rules: r.rules ?? {} } }];"
+      }
+    },
+    {
+      "id": "a5a89568-f656-4f8b-a255-f64ac171a6fa",
+      "position": [
+        960,
+        400
+      ],
+      "name": "Build report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/reports/{{ $('Gate').first().json.input.kind || 'daily' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "5e518d8f-3684-4d41-adb0-242059e281e2",
+      "position": [
+        1200,
+        400
+      ],
+      "name": "Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nreturn [{ json: { status: 'succeeded', stats: { kind: $('Gate').first().json.input.kind || 'daily', emailed: Boolean(r.emailed), telegram: Boolean(r.telegram) }, item_errors: [], text: r.text ?? '', telegram: Boolean(r.telegram) } }];"
+      }
+    },
+    {
+      "id": "5e488c89-eb98-4ff6-aede-c9cc418d2c09",
+      "position": [
+        1680,
+        400
+      ],
+      "name": "Telegram enabled?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const s = $('Summarize').first().json;\n// Sent only when enabled in Settings, a chat id is configured, and there is something to say.\nif (!s.telegram || !s.text || !$env.TELEGRAM_CHAT_ID) return [];\nreturn [{ json: { text: s.text.slice(0, 4000) } }];"
+      }
+    },
+    {
+      "id": "07cdc1f4-5161-451f-a786-6ac535534cb1",
+      "position": [
+        1920,
+        400
+      ],
+      "name": "Send Telegram message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "apTelegramBotKey",
+          "name": "ApplyPilot Telegram Bot"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Optional — requires the Telegram credential and TELEGRAM_CHAT_ID",
+      "notesInFlow": true
+    },
+    {
+      "id": "a4cd0787-7983-47f4-a084-33caf4219ca1",
+      "position": [
+        1440,
+        400
+      ],
+      "name": "Finish run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/{{ $('Gate').first().json.run_id }}/finish",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: $('Summarize').first().json.status, stats: $('Summarize').first().json.stats, item_errors: $('Summarize').first().json.item_errors ?? [], output: $('Summarize').first().json.output ?? null }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Daily summary 08:00": {
+      "main": [
+        [
+          {
+            "node": "Set daily",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly statistics Mon 08:00": {
+      "main": [
+        [
+          {
+            "node": "Set weekly",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interview reminders hourly": {
+      "main": [
+        [
+          {
+            "node": "Set interviews",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pending approvals 18:00": {
+      "main": [
+        [
+          {
+            "node": "Set approvals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set daily": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set weekly": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set interviews": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set approvals": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run request": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve run": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate": {
+      "main": [
+        [
+          {
+            "node": "Build report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build report": {
+      "main": [
+        [
+          {
+            "node": "Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize": {
+      "main": [
+        [
+          {
+            "node": "Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finish run": {
+      "main": [
+        [
+          {
+            "node": "Telegram enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram enabled?": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "apErrorRecover09"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "applypilot": {
+      "description": "Daily/weekly summaries, interview reminders and pending approvals (in-app, Gmail, Telegram)."
+    }
+  },
+  "versionId": "028578da-6469-40eb-a00d-3281f63be314"
+}

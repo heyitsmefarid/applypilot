@@ -1,0 +1,130 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/instrument-sans/wdth.css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * ApplyPilot tokens — "instrument panel" palette.
+ * paper / ink / jade (go, high match) / amber (caution, consider) / rose (stop, error) / slate (neutral).
+ */
+:root {
+  --paper: #f4f6f5;
+  --surface: #ffffff;
+  --surface-2: #eef1f0;
+  --ink: #18202b;
+  --ink-2: #3a4553;
+  --muted: #5b6675;
+  --line: #d9dfdd;
+  --line-strong: #c3cbc9;
+  --jade: #0e7c6b;
+  --jade-ink: #ffffff;
+  --jade-soft: #dcefeb;
+  --amber: #a8720b;
+  --amber-soft: #f7ecd2;
+  --rose: #b8404a;
+  --rose-soft: #f6dfe1;
+  --sky: #2f6390;
+  --sky-soft: #dde8f1;
+  --focus: #0e7c6b;
+  /* Chart series (validated: light vs #ffffff surface) */
+  --chart-1: #00896f;
+  --chart-2: #7b52c7;
+}
+
+.dark {
+  --paper: #121821;
+  --surface: #18202b;
+  --surface-2: #1f2834;
+  --ink: #e7ecea;
+  --ink-2: #c4ccd3;
+  --muted: #8d98a6;
+  --line: #2a3441;
+  --line-strong: #3a4656;
+  --jade: #3fbfa8;
+  --jade-ink: #0b1a17;
+  --jade-soft: #173a35;
+  --amber: #e2b04a;
+  --amber-soft: #3a2f17;
+  --rose: #ec7e86;
+  --rose-soft: #3d2226;
+  --sky: #7fb0dc;
+  --sky-soft: #1d3042;
+  --focus: #3fbfa8;
+  /* Chart series (validated: dark vs #18202b surface) */
+  --chart-1: #22a88e;
+  --chart-2: #9373ea;
+}
+
+@theme inline {
+  --font-sans: 'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif;
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-jade: var(--jade);
+  --color-jade-ink: var(--jade-ink);
+  --color-jade-soft: var(--jade-soft);
+  --color-amber: var(--amber);
+  --color-amber-soft: var(--amber-soft);
+  --color-rose: var(--rose);
+  --color-rose-soft: var(--rose-soft);
+  --color-sky: var(--sky);
+  --color-sky-soft: var(--sky-soft);
+  --radius-panel: 8px;
+  --radius-control: 6px;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    font-feature-settings: 'tnum' 0;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection {
+    background: var(--jade-soft);
+  }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  * {
+    border-color: var(--line);
+  }
+}
+
+@layer components {
+  /* Condensed width of the same family for figures and headings — the type is the instrument. */
+  .type-display {
+    font-stretch: 78%;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+  }
+  .figures {
+    font-variant-numeric: tabular-nums;
+    font-stretch: 85%;
+  }
+  .prose-plain p + p {
+    margin-top: 0.75em;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

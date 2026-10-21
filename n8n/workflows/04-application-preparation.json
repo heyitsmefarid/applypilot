@@ -1,0 +1,338 @@
+{
+  "id": "apAppPrep0000004",
+  "name": "ApplyPilot 04 · Application Preparation",
+  "active": false,
+  "nodes": [
+    {
+      "id": "9051463d-6ce6-4d12-ac45-b87956714f2e",
+      "position": [
+        0,
+        0
+      ],
+      "name": "Run request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "ae1f8deb-0f6b-4ca0-a38a-8f8a4ef213b5",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "applypilot/application-prep",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apWebhookAuthKey",
+          "name": "ApplyPilot Webhook Auth"
+        }
+      }
+    },
+    {
+      "id": "873c5b69-f557-49f1-a193-d0602d53dccc",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Resolve run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Webhook calls carry { run_id, input } from the dispatcher (or push mode); schedules carry neither.\nconst first = $input.first().json;\nconst body = first.body ?? {};\nreturn [{ json: {\n  run_id: body.run_id ?? null,\n  trigger: body.run_id ? 'webhook' : 'schedule',\n  input: body.input ?? {},\n  execution_id: String($execution.id),\n} }];"
+      }
+    },
+    {
+      "id": "7617b855-d7f3-46cb-a70c-6ce6196471a4",
+      "position": [
+        480,
+        0
+      ],
+      "name": "Start run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/start",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'application_prep', run_id: $json.run_id, trigger: $json.trigger, n8n_execution_id: $json.execution_id, input: $json.input }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Creates/claims the run, checks the emergency pause",
+      "notesInFlow": true
+    },
+    {
+      "id": "7a9a1764-6738-4698-a256-85303fa9cd18",
+      "position": [
+        720,
+        0
+      ],
+      "name": "Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nif (!r.proceed) {\n  // Paused, cancelled or already finished: the Worker recorded why. Returning no items ends this execution.\n  return [];\n}\nreturn [{ json: { run_id: r.run.id, input: r.run.input ?? {}, rules: r.rules ?? {} } }];"
+      }
+    },
+    {
+      "id": "a78d6688-05fb-4be0-aa30-ab419e5b98af",
+      "position": [
+        240,
+        200
+      ],
+      "name": "Split jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const input = $('Gate').first().json.input;\nconst ids = [...new Set([...(input.job_ids ?? []), ...(input.job_id ? [input.job_id] : [])])];\nreturn ids.length ? ids.map((id) => ({ json: { job_id: id } })) : [{ json: { noop: true } }];"
+      }
+    },
+    {
+      "id": "bf3e486f-f6fa-4d89-a8df-1fa1c391b748",
+      "position": [
+        480,
+        200
+      ],
+      "name": "Prepare documents",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.noop ? $env.APPLYPILOT_API_URL + '/health' : $env.APPLYPILOT_API_URL + '/internal/applications/prepare' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 240000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 30000
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ job_id: $json.job_id }) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-ApplyPilot-Run-Id",
+              "value": "={{ $('Gate').first().json.run_id }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 60000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "d3995a57-8341-432c-aa55-d5da87bdcdc8",
+      "position": [
+        720,
+        200
+      ],
+      "name": "Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const errOf = (j) => {\n  if (!j || j.error === undefined) return null;\n  const e = j.error;\n  if (typeof e === 'string') return e;\n  return e.message || e.description || JSON.stringify(e).slice(0, 300);\n};\n\nconst reqs = $('Split jobs').all();\nconst item_errors = [];\nconst submit = [];\nlet prepared = 0;\n$input.all().forEach((it, i) => {\n  if (reqs[i]?.json.noop) return;\n  const err = errOf(it.json);\n  if (err) { item_errors.push({ job_id: reqs[i]?.json.job_id, error: err }); return; }\n  prepared++;\n  for (const e of it.json.errors ?? []) item_errors.push({ job_id: reqs[i]?.json.job_id, step: e.step, error: e.error });\n  // Only conditional auto-apply with document approval disabled continues automatically.\n  if (it.json.next === 'submit') submit.push(it.json.application_id);\n});\nreturn [{ json: { status: item_errors.length ? (prepared ? 'partial' : 'failed') : 'succeeded', stats: { prepared, failed: item_errors.length, queued_for_submission: submit.length }, item_errors, submit_ids: submit } }];"
+      }
+    },
+    {
+      "id": "4e7ad516-d5a0-4a01-afa1-ce07f9f0311c",
+      "position": [
+        960,
+        200
+      ],
+      "name": "Queue auto-submission",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/enqueue-batch",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ runs: $json.submit_ids.map((id) => ({ workflow: 'application_submit', trigger: 'event', input: { application_id: id, mode: 'submit' }, idempotency_key: 'autosubmit:' + id, max_attempts: 1 })) }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "The Worker re-checks every auto-apply rule before dispatching",
+      "notesInFlow": true
+    },
+    {
+      "id": "9e7ebab2-a2f0-4414-a0f7-480b7dd982b9",
+      "position": [
+        1200,
+        200
+      ],
+      "name": "Finish run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/{{ $('Gate').first().json.run_id }}/finish",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: $('Summarize').first().json.status, stats: $('Summarize').first().json.stats, item_errors: $('Summarize').first().json.item_errors ?? [], output: $('Summarize').first().json.output ?? null }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Run request": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve run": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate": {
+      "main": [
+        [
+          {
+            "node": "Split jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split jobs": {
+      "main": [
+        [
+          {
+            "node": "Prepare documents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare documents": {
+      "main": [
+        [
+          {
+            "node": "Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize": {
+      "main": [
+        [
+          {
+            "node": "Queue auto-submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue auto-submission": {
+      "main": [
+        [
+          {
+            "node": "Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "apErrorRecover09"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "applypilot": {
+      "description": "Tailored resume, cover letter, email and screening answers for selected jobs."
+    }
+  },
+  "versionId": "3f19de41-e77d-4811-a5fc-116164c4d05c"
+}

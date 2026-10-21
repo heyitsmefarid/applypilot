@@ -1,0 +1,412 @@
+{
+  "id": "apGmailMonitor06",
+  "name": "ApplyPilot 06 · Gmail Recruitment Monitoring",
+  "active": false,
+  "nodes": [
+    {
+      "id": "5f91dc84-546f-4a72-af09-3e8e62ad3d44",
+      "position": [
+        0,
+        0
+      ],
+      "name": "Every 30 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "3e569b09-b331-465c-a30e-f10c19fad521",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Run request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "aca07b60-e148-47a2-a8a9-24cbb61ae791",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "applypilot/gmail-sync",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apWebhookAuthKey",
+          "name": "ApplyPilot Webhook Auth"
+        }
+      }
+    },
+    {
+      "id": "8b6e6fe4-b876-4327-ab51-ac3f0e3f1bc5",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Resolve run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Webhook calls carry { run_id, input } from the dispatcher (or push mode); schedules carry neither.\nconst first = $input.first().json;\nconst body = first.body ?? {};\nreturn [{ json: {\n  run_id: body.run_id ?? null,\n  trigger: body.run_id ? 'webhook' : 'schedule',\n  input: body.input ?? {},\n  execution_id: String($execution.id),\n} }];"
+      }
+    },
+    {
+      "id": "6d336a45-f691-4e32-a467-60114e9449c9",
+      "position": [
+        480,
+        0
+      ],
+      "name": "Start run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/start",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'gmail_sync', run_id: $json.run_id, trigger: $json.trigger, n8n_execution_id: $json.execution_id, input: $json.input }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "notes": "Creates/claims the run, checks the emergency pause",
+      "notesInFlow": true
+    },
+    {
+      "id": "8e86e505-2699-411a-ac97-a720e89068fb",
+      "position": [
+        720,
+        0
+      ],
+      "name": "Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nif (!r.proceed) {\n  // Paused, cancelled or already finished: the Worker recorded why. Returning no items ends this execution.\n  return [];\n}\nreturn [{ json: { run_id: r.run.id, input: r.run.input ?? {}, rules: r.rules ?? {} } }];"
+      }
+    },
+    {
+      "id": "4b357def-c4cb-4892-ae72-d1483672e7bd",
+      "position": [
+        240,
+        200
+      ],
+      "name": "Sync recruitment emails",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/gmail/sync",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ max: 15 }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 30000,
+      "onError": "continueRegularOutput",
+      "notes": "Incremental Gmail search; job-alert emails become jobs",
+      "notesInFlow": true
+    },
+    {
+      "id": "2b9fbc81-7d7e-48db-ad00-8c18d74d688b",
+      "position": [
+        480,
+        200
+      ],
+      "name": "Unclassified messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/gmail/unclassified?limit=12",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "executeOnce": true
+    },
+    {
+      "id": "5c9a5a49-0bcd-4b2f-a7f0-af68936fff53",
+      "position": [
+        720,
+        200
+      ],
+      "name": "Split messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ids = $input.first().json.message_ids ?? [];\nreturn ids.length ? ids.map((id) => ({ json: { message_id: id } })) : [{ json: { noop: true } }];"
+      }
+    },
+    {
+      "id": "07210fc0-8ded-40a0-abf6-c42642f9f67c",
+      "position": [
+        960,
+        200
+      ],
+      "name": "Classify & link",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.noop ? $env.APPLYPILOT_API_URL + '/health' : $env.APPLYPILOT_API_URL + '/internal/gmail/messages/' + $json.message_id + '/classify' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 6500
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({}) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-ApplyPilot-Run-Id",
+              "value": "={{ $('Gate').first().json.run_id }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 30000,
+      "onError": "continueRegularOutput",
+      "notes": "Status changes only at ≥ 0.85 confidence; replies are drafted, never sent",
+      "notesInFlow": true
+    },
+    {
+      "id": "75b6739e-c71e-45d1-a210-8ac702f0c22c",
+      "position": [
+        1200,
+        200
+      ],
+      "name": "Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const errOf = (j) => {\n  if (!j || j.error === undefined) return null;\n  const e = j.error;\n  if (typeof e === 'string') return e;\n  return e.message || e.description || JSON.stringify(e).slice(0, 300);\n};\n\nconst sync = $('Sync recruitment emails').first().json;\nconst reqs = $('Split messages').all();\nconst item_errors = [];\nconst syncErr = errOf(sync);\nif (syncErr) item_errors.push({ step: 'sync', error: syncErr });\nlet classified = 0, status_changes = 0, important = 0;\n$input.all().forEach((it, i) => {\n  if (reqs[i]?.json.noop) return;\n  const err = errOf(it.json);\n  if (err) { item_errors.push({ message_id: reqs[i]?.json.message_id, error: err }); return; }\n  classified++;\n  if (it.json.status_changed) status_changes++;\n  if (['interview', 'offer', 'assessment', 'rejection'].includes(it.json.category)) important++;\n});\nconst stats = { fetched: sync.fetched ?? 0, alert_jobs: sync.alert_jobs ?? 0, classified, status_changes, important, failed: item_errors.length };\nreturn [{ json: { status: item_errors.length ? (classified || stats.fetched ? 'partial' : 'failed') : 'succeeded', stats, item_errors, output: { has_more: Boolean(sync.has_more) } } }];"
+      }
+    },
+    {
+      "id": "7490eeed-be3e-43b0-afd2-81e7ff2addfd",
+      "position": [
+        1440,
+        200
+      ],
+      "name": "Finish run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/{{ $('Gate').first().json.run_id }}/finish",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: $('Summarize').first().json.status, stats: $('Summarize').first().json.stats, item_errors: $('Summarize').first().json.item_errors ?? [], output: $('Summarize').first().json.output ?? null }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Every 30 minutes": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run request": {
+      "main": [
+        [
+          {
+            "node": "Resolve run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve run": {
+      "main": [
+        [
+          {
+            "node": "Start run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start run": {
+      "main": [
+        [
+          {
+            "node": "Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate": {
+      "main": [
+        [
+          {
+            "node": "Sync recruitment emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync recruitment emails": {
+      "main": [
+        [
+          {
+            "node": "Unclassified messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unclassified messages": {
+      "main": [
+        [
+          {
+            "node": "Split messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split messages": {
+      "main": [
+        [
+          {
+            "node": "Classify & link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify & link": {
+      "main": [
+        [
+          {
+            "node": "Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize": {
+      "main": [
+        [
+          {
+            "node": "Finish run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "apErrorRecover09"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "applypilot": {
+      "description": "Imports recruitment emails and job alerts, classifies and links them to applications."
+    }
+  },
+  "versionId": "2075a9d7-9eca-4e8a-a880-54cf8a824bc3"
+}

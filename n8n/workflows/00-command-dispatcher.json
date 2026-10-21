@@ -1,0 +1,220 @@
+{
+  "id": "apDispatcher0000",
+  "name": "ApplyPilot 00 · Command Dispatcher",
+  "active": false,
+  "nodes": [
+    {
+      "id": "886bfd9c-75d7-4c24-a4e4-91ca4d004da2",
+      "position": [
+        0,
+        0
+      ],
+      "name": "Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "e59d2c36-c777-435c-aab4-f75b82d9f1d2",
+      "position": [
+        240,
+        0
+      ],
+      "name": "Claim queued runs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/claim",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ limit: 5 }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "Atomic claim (FOR UPDATE SKIP LOCKED) — a run is never delivered twice",
+      "notesInFlow": true
+    },
+    {
+      "id": "c86a4867-be45-4590-afdb-f9e4c806d4c8",
+      "position": [
+        480,
+        0
+      ],
+      "name": "Route to workflows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const PATHS = {\"job_discovery\":\"applypilot/job-discovery\",\"resume_analysis\":\"applypilot/resume-analysis\",\"job_matching\":\"applypilot/job-matching\",\"application_prep\":\"applypilot/application-prep\",\"application_submit\":\"applypilot/application-submit\",\"gmail_sync\":\"applypilot/gmail-sync\",\"follow_up\":\"applypilot/follow-up\",\"reports\":\"applypilot/reports\",\"error_recovery\":\"applypilot/error-recovery\"};\nconst runs = $input.first().json.runs ?? [];\n// Each claimed run is forwarded to the local webhook of the workflow that handles it.\nreturn runs.filter((r) => PATHS[r.workflow]).map((r) => ({ json: { run_id: r.id, workflow: r.workflow, input: r.input ?? {}, path: PATHS[r.workflow] } }));"
+      }
+    },
+    {
+      "id": "dfe9ee26-61b3-41d4-acf2-51e25003a0f5",
+      "position": [
+        720,
+        0
+      ],
+      "name": "Deliver to workflow webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.N8N_INTERNAL_WEBHOOK_BASE || 'http://localhost:5678') + '/webhook/' + $json.path }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ run_id: $json.run_id, workflow: $json.workflow, input: $json.input }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apWebhookAuthKey",
+          "name": "ApplyPilot Webhook Auth"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b6e272b8-2826-4dcc-a18d-90fbeba70f17",
+      "position": [
+        960,
+        0
+      ],
+      "name": "Find undelivered",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const errOf = (j) => {\n  if (!j || j.error === undefined) return null;\n  const e = j.error;\n  if (typeof e === 'string') return e;\n  return e.message || e.description || JSON.stringify(e).slice(0, 300);\n};\n\nconst routed = $('Route to workflows').all();\n// Delivery fails when the target workflow is inactive; such runs go back to the queue.\nreturn $input.all().map((it, i) => ({ json: { run_id: routed[i]?.json.run_id, error: errOf(it.json) } })).filter((x) => x.error && x.run_id);"
+      }
+    },
+    {
+      "id": "6db7888b-ec56-480f-a1ce-02f4de13d72d",
+      "position": [
+        1200,
+        0
+      ],
+      "name": "Release run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.APPLYPILOT_API_URL }}/internal/runs/{{ $json.run_id }}/release",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ error: $json.error }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "apInternalApiKey",
+          "name": "ApplyPilot Internal API"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "Claim queued runs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim queued runs": {
+      "main": [
+        [
+          {
+            "node": "Route to workflows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route to workflows": {
+      "main": [
+        [
+          {
+            "node": "Deliver to workflow webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deliver to workflow webhook": {
+      "main": [
+        [
+          {
+            "node": "Find undelivered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find undelivered": {
+      "main": [
+        [
+          {
+            "node": "Release run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "apErrorRecover09"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "applypilot": {
+      "description": "Polls the Supabase-backed run queue every minute and starts the matching workflow."
+    }
+  },
+  "versionId": "86fc8d93-d8f0-4196-a0ab-49a0d6948a3c"
+}
