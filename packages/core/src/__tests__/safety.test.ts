@@ -119,45 +119,42 @@ describe('email rules', () => {
     expect(decideStatusFromEmail('offer', 0.99, 'applied')).toMatchObject({ update: false, suggested: true, to: 'offer' });
     expect(decideStatusFromEmail('offer', 0.99, 'applied', false).update).toBe(false);
   });
-  it('reads only Gmail-authenticated, domain-aligned senders as verified', () => {
-    const gmail = 'mx.google.com; dkim=pass header.i=@acme.com header.s=s1 header.b=abc; spf=pass (google.com: domain of jobs@acme.com designates 1.2.3.4 as permitted sender) smtp.mailfrom=jobs@acme.com; dmarc=pass (p=REJECT) header.from=acme.com';
+  it('accepts only a Gmail DMARC pass for the From domain', () => {
+    const gmail = 'mx.google.com; dkim=pass header.i=@acme.com header.s=s1 header.b=abc; spf=pass (google.com: domain of jobs@acme.com designates 1.2.3.4 as permitted sender) smtp.mailfrom=jobs@acme.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=acme.com';
     expect(senderAuthenticated(gmail, 'Talent <jobs@acme.com>')).toBe(true);
+    expect(senderAuthenticated(gmail, 'jobs@hr.acme.com')).toBe(true);
     expect(senderAuthenticated(gmail, 'hr@acme-careers.com')).toBe(false);
-    expect(senderAuthenticated('mx.google.com; dkim=fail header.i=@acme.com; spf=softfail smtp.mailfrom=x@acme.com; dmarc=fail header.from=acme.com', 'jobs@acme.com')).toBe(false);
-    expect(senderAuthenticated('evil.example; dkim=pass header.i=@acme.com', 'jobs@acme.com')).toBe(false);
+    // DKIM or SPF passing without DMARC is not enough.
+    expect(senderAuthenticated('mx.google.com; dkim=pass header.d=acme.com header.i=@acme.com; spf=pass smtp.mailfrom=jobs@acme.com; dmarc=fail header.from=acme.com', 'jobs@acme.com')).toBe(false);
+    // Only Gmail's own authserv-id counts.
+    expect(senderAuthenticated('evil.example; dmarc=pass header.from=acme.com', 'jobs@acme.com')).toBe(false);
     expect(senderAuthenticated(null, 'jobs@acme.com')).toBe(false);
   });
-  it('does not accept SPF alone or "pass" text hidden in comments', () => {
-    // SPF authenticates the envelope sender, not the visible From header.
-    expect(senderAuthenticated('mx.google.com; spf=pass smtp.mailfrom=jobs@acme.com; dkim=none; dmarc=fail header.from=acme.com', 'jobs@acme.com')).toBe(false);
-    // Attacker-controlled text inside a comment must not be parsed as a result.
-    expect(senderAuthenticated('mx.google.com; dkim=fail (dkim=pass header.d=acme.com) header.d=evil.test; dmarc=fail (dmarc=pass header.from=acme.com) header.from=acme.com', 'jobs@acme.com')).toBe(false);
-    // A DKIM signature from an unrelated domain is not aligned with From.
-    expect(senderAuthenticated('mx.google.com; dkim=pass header.d=mailer.example header.i=@mailer.example; dmarc=fail header.from=acme.com', 'jobs@acme.com')).toBe(false);
-    expect(senderAuthenticated('mx.google.com; dkim=pass header.d=acme.com header.i=@acme.com', 'jobs@hr.acme.com')).toBe(true);
+  it('ignores results hidden in comments and rejects ambiguous headers', () => {
+    // A real result in a comment, including escaped parentheses and semicolons, means nothing.
+    expect(senderAuthenticated('mx.google.com; dmarc=fail (dmarc=pass header.from=acme.com) header.from=acme.com', 'jobs@acme.com')).toBe(false);
+    expect(senderAuthenticated('mx.google.com; dmarc=fail (x \\); dmarc=pass header.from=acme.com) header.from=acme.com', 'jobs@acme.com')).toBe(false);
+    // Unbalanced parentheses or any quote characters make the whole header untrusted.
+    expect(senderAuthenticated('mx.google.com; dmarc=fail (unclosed; dmarc=pass header.from=acme.com', 'jobs@acme.com')).toBe(false);
+    expect(senderAuthenticated('mx.google.com; x=") ; dmarc=pass header.from=acme.com ("', 'jobs@acme.com')).toBe(false);
+    expect(senderAuthenticated('mx.google.com; dmarc=pass header.from=acme.com )', 'jobs@acme.com')).toBe(false);
   });
-  it('uses the Public Suffix List, so .com.ph domains are not lumped together', () => {
-    const header = 'mx.google.com; dkim=pass header.i=@evil.com.ph; dmarc=pass header.from=evil.com.ph';
-    // The attacker legitimately authenticates their own domain…
-    expect(senderAuthenticated(header, 'hr@evil.com.ph')).toBe(true);
-    // …but that must not make them trusted for another .com.ph employer.
-    expect(isTrustedSender('hr@evil.com.ph', { company_domain: 'acme.com.ph', apply_url: 'https://careers.acme.com.ph/jobs/1' }, true)).toBe(false);
-    expect(isTrustedSender('talent@mail.acme.com.ph', { company_domain: 'acme.com.ph', apply_url: null }, true)).toBe(true);
-  });
-  it('trusts the employer or the ATS hosting this application, never relay platforms', () => {
-    const app = { company_domain: 'acme.com', apply_url: 'https://boards.greenhouse.io/acme/jobs/1' };
-    expect(isTrustedSender('no-reply@us.greenhouse-mail.io', app, true)).toBe(true);
-    expect(isTrustedSender('jobs@mail.acme.com', { company_domain: 'acme.com', apply_url: null }, true)).toBe(true);
-    // An ATS is trusted only for applications whose apply link is on that ATS.
-    expect(isTrustedSender('no-reply@hire.lever.co', app, true)).toBe(false);
-    expect(isTrustedSender('no-reply@greenhouse.io', { company_domain: null, apply_url: null }, true)).toBe(false);
-    // Platforms relaying user-written messages are never trusted.
-    expect(isTrustedSender('jobs-noreply@linkedin.com', { company_domain: null, apply_url: 'https://www.linkedin.com/jobs/view/1' }, true)).toBe(false);
-    expect(isTrustedSender('someone@gmail.com', { company_domain: 'gmail.com', apply_url: null }, true)).toBe(false);
-    // A job-board apply link does not make the board an employer.
-    expect(isTrustedSender('hello@remotive.com', { company_domain: null, apply_url: 'https://remotive.com/remote-jobs/x-1' }, true)).toBe(false);
+  it('trusts only the employer domain stored on the application (Public Suffix List aware)', () => {
+    const app = { company_domain: 'acme.com.ph' };
+    expect(isTrustedSender('talent@mail.acme.com.ph', app, true)).toBe(true);
+    // A different organisation on the same public suffix is not the employer.
+    expect(isTrustedSender('hr@evil.com.ph', app, true)).toBe(false);
     expect(isTrustedSender('recruiter@acme-hiring.net', app, true)).toBe(false);
-    expect(isTrustedSender('jobs@acme.com', app, false)).toBe(false);
+    expect(isTrustedSender('talent@acme.com.ph', app, false)).toBe(false);
+  });
+  it('never trusts ATS, job-board, relay or webmail senders, nor applications without an employer domain', () => {
+    // Multi-tenant ATS mail is sent for every employer — the domain does not identify this one.
+    expect(isTrustedSender('no-reply@us.greenhouse-mail.io', { company_domain: null }, true)).toBe(false);
+    expect(isTrustedSender('no-reply@greenhouse.io', { company_domain: 'greenhouse.io' }, true)).toBe(false);
+    expect(isTrustedSender('jobs-noreply@linkedin.com', { company_domain: 'linkedin.com' }, true)).toBe(false);
+    expect(isTrustedSender('someone@gmail.com', { company_domain: 'gmail.com' }, true)).toBe(false);
+    expect(isTrustedSender('hello@remotive.com', { company_domain: 'remotive.com' }, true)).toBe(false);
+    expect(isTrustedSender('jobs@acme.com', { company_domain: null }, true)).toBe(false);
   });
   it('links emails to applications only when unambiguous', () => {
     const apps = [
