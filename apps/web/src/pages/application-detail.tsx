@@ -268,6 +268,23 @@ export default function ApplicationDetail() {
                   if (n >= 1 && n <= 60) await supabase.from('applications').update({ follow_up_interval_days: n }).eq('id', id).then(({ error: err }) => err && toast.error(errorMessage(err)));
                 }} /></Field>
               </div>
+              <Field
+                label="Company email domain"
+                hint="Only Gmail-verified mail from this exact domain (e.g. acme.com) may update this application's status on its own. Other recruitment email is shown as a suggestion."
+              >
+                <Input
+                  placeholder="acme.com"
+                  defaultValue={app.company_domain ?? ''}
+                  onBlur={async (e) => {
+                    const v = e.target.value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
+                    if (v === (app.company_domain ?? '')) return;
+                    if (v && !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(v)) return toast.error('Enter a domain like acme.com');
+                    const { error: err } = await supabase.from('applications').update({ company_domain: v || null }).eq('id', id);
+                    if (err) toast.error(errorMessage(err));
+                    else refresh();
+                  }}
+                />
+              </Field>
             </div>
           </Panel>
           {(data.messages.length > 0 || data.interviews.length > 0) && (

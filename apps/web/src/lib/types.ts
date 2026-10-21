@@ -218,6 +218,7 @@ export interface Application {
   company: string;
   job_title: string;
   apply_url: string | null;
+  company_domain: string | null;
   source_key: string | null;
   match_score: number | null;
   resume_version_id: string | null;

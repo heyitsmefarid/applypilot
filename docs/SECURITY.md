@@ -56,13 +56,17 @@ are the controls in place and the threats each one addresses.
 - **Email-driven status changes** treat both the email and the model's reading of it as untrusted:
   - Emails are linked to applications deterministically (sender domain, plus company name and job
     title found in the email), never through the company or title the model extracts.
-  - A status changes automatically only when Gmail's own `Authentication-Results` header
-    (parsed per RFC 8601, comments stripped, authserv-id `mx.google.com`) shows DMARC pass for
-    the From domain or an aligned DKIM pass. SPF alone isn't accepted. The sender must *also* be
-    the employer, by the same registrable domain under the Public Suffix List (so `evil.com.ph`
-    never matches `acme.com.ph`), or the ATS that hosts *this* application's apply link. Relay
-    platforms (LinkedIn, Indeed, JobStreet, Kalibrr, webmail) and job boards are never trusted.
-    Confidence must be ≥ 0.85 with a forward-only transition.
+  - A status changes automatically only when **all** of the following hold:
+    - Gmail's own `Authentication-Results` header (authserv-id `mx.google.com`) reports
+      `dmarc=pass` for the From domain. The header is tokenized in one pass with comment-depth
+      and escape tracking; any quote character or unbalanced parenthesis rejects it entirely.
+      DKIM or SPF results on their own don't count.
+    - The sender's registrable domain under the Public Suffix List (so `evil.com.ph` ≠
+      `acme.com.ph`) equals the **employer domain stored on that application**, which you can
+      set in its Details panel. Webmail, job boards, relay platforms and multi-tenant ATS
+      domains (Greenhouse, Lever, …) can never be an employer domain, because their mail is
+      sent on behalf of many companies.
+    - Confidence is ≥ 0.85 and the transition only moves forward.
   - Otherwise the change is stored as a **suggestion** that you apply from the inbox. Unverified
     senders also can't set the recruiter address, suppress follow-ups or auto-schedule interviews.
 - The **fabrication guard** compares every AI rewrite with the verified resume. It removes
